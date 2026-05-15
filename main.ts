@@ -14,6 +14,10 @@ import {
   requestUrl,
   setIcon,
 } from "obsidian";
+import { spawn } from "child_process";
+import { existsSync } from "fs";
+import { homedir, tmpdir } from "os";
+import { join } from "path";
 
 const MEMOS_VIEW_TYPE = "memos-card-view";
 type MemosViewLocation = "main" | "right";
@@ -44,6 +48,27 @@ interface ElectronModule {
   BrowserWindow: new (options: Record<string, unknown>) => ElectronBrowserWindow;
 }
 
+interface ChromeDebugTarget {
+  id: string;
+  type: string;
+  title: string;
+  url: string;
+  webSocketDebuggerUrl?: string;
+}
+
+interface ChromeEvalResponse<T> {
+  id: number;
+  result?: {
+    result?: {
+      value?: T;
+    };
+    exceptionDetails?: unknown;
+  };
+  error?: {
+    message?: string;
+  };
+}
+
 interface MemosPluginSettings {
   baseUrl: string;
   token: string;
@@ -52,6 +77,7 @@ interface MemosPluginSettings {
   llmModel: string;
   llmApiKey: string;
   webClipCookie: string;
+  webClipChromePath: string;
 }
 
 interface MemosAttachment {
@@ -121,8 +147,10 @@ const DEFAULT_SETTINGS: MemosPluginSettings = {
   llmModel: "",
   llmApiKey: "",
   webClipCookie: "",
+  webClipChromePath: "",
 };
 const WEB_CLIP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+const WEB_CLIP_CHROME_DEBUG_PORT = 9223;
 
 export default class MemosCardPlugin extends Plugin {
   settings: MemosPluginSettings;
@@ -1087,6 +1115,19 @@ class MemosSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+
+    new Setting(containerEl)
+      .setName("System Chrome path")
+      .setDesc("Optional. Used as a lightweight real-browser fallback for sites that block embedded/headless browsers.")
+      .addText((text) => {
+        text
+          .setPlaceholder("Auto-detect Google Chrome")
+          .setValue(this.plugin.settings.webClipChromePath)
+          .onChange(async (value) => {
+            this.plugin.settings.webClipChromePath = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
   }
 }
 
@@ -1098,6 +1139,11 @@ async function fetchWebClipPage(
   const browserHtml = await fetchWebClipPageWithBrowser(url, settings);
   if (browserHtml) {
     return parseWebClipHtml(url, browserHtml);
+  }
+
+  const systemChromeHtml = await fetchWebClipPageWithSystemChrome(url, settings);
+  if (systemChromeHtml) {
+    return parseWebClipHtml(url, systemChromeHtml);
   }
 
   const response = await requestUrl({
@@ -1162,6 +1208,171 @@ async function fetchWebClipPageWithBrowser(
   } finally {
     win?.destroy();
   }
+}
+
+async function fetchWebClipPageWithSystemChrome(
+  url: string,
+  settings: MemosPluginSettings,
+): Promise<string> {
+  if (!Platform.isDesktopApp) {
+    return "";
+  }
+
+  const chromePath = findSystemChromePath(settings.webClipChromePath);
+  if (!chromePath) {
+    return "";
+  }
+
+  let target: ChromeDebugTarget | null = null;
+  try {
+    await ensureChromeDebugServer(chromePath);
+    target = await openChromeDebugTarget(url);
+    if (!target.webSocketDebuggerUrl) {
+      return "";
+    }
+
+    await delay(4500);
+    const html = await evaluateChromeTarget<string>(
+      target.webSocketDebuggerUrl,
+      "document.documentElement ? document.documentElement.outerHTML : ''",
+    );
+    if (!html || isBlockedWebClipHtml(html)) {
+      return "";
+    }
+
+    return html;
+  } catch {
+    return "";
+  } finally {
+    if (target) {
+      void closeChromeDebugTarget(target.id);
+    }
+  }
+}
+
+async function ensureChromeDebugServer(chromePath: string): Promise<void> {
+  if (await canReachChromeDebugServer()) {
+    return;
+  }
+
+  launchChromeDebugServer(chromePath);
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    if (await canReachChromeDebugServer()) {
+      return;
+    }
+    await delay(250);
+  }
+
+  throw new Error("System Chrome debugging server did not start.");
+}
+
+async function canReachChromeDebugServer(): Promise<boolean> {
+  try {
+    await chromeDebugJson<Record<string, unknown>>("/json/version");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function launchChromeDebugServer(chromePath: string): void {
+  const child = spawn(chromePath, [
+    `--remote-debugging-port=${WEB_CLIP_CHROME_DEBUG_PORT}`,
+    `--user-data-dir=${join(tmpdir(), "memos-card-view-chrome")}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "about:blank",
+  ], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+}
+
+async function openChromeDebugTarget(url: string): Promise<ChromeDebugTarget> {
+  return chromeDebugJson<ChromeDebugTarget>(`/json/new?${encodeURIComponent(url)}`, "PUT");
+}
+
+async function closeChromeDebugTarget(targetId: string): Promise<void> {
+  await chromeDebugJson<Record<string, unknown>>(`/json/close/${targetId}`);
+}
+
+async function chromeDebugJson<T>(path: string, method = "GET"): Promise<T> {
+  const response = await requestUrl({
+    url: `http://127.0.0.1:${WEB_CLIP_CHROME_DEBUG_PORT}${path}`,
+    method,
+    throw: false,
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Chrome debug request failed (${response.status}).`);
+  }
+
+  return response.json as T;
+}
+
+function evaluateChromeTarget<T>(webSocketUrl: string, expression: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const requestId = 1;
+    const socket = new WebSocket(webSocketUrl);
+    const timeout = window.setTimeout(() => {
+      socket.close();
+      reject(new Error("Chrome target evaluation timed out."));
+    }, 10000);
+
+    socket.onopen = () => {
+      socket.send(JSON.stringify({
+        id: requestId,
+        method: "Runtime.evaluate",
+        params: {
+          expression,
+          returnByValue: true,
+          awaitPromise: true,
+        },
+      }));
+    };
+
+    socket.onerror = () => {
+      window.clearTimeout(timeout);
+      reject(new Error("Chrome target websocket failed."));
+    };
+
+    socket.onmessage = (event) => {
+      const message = JSON.parse(String(event.data)) as ChromeEvalResponse<T>;
+      if (message.id !== requestId) {
+        return;
+      }
+
+      window.clearTimeout(timeout);
+      socket.close();
+      if (message.error?.message || message.result?.exceptionDetails) {
+        reject(new Error(message.error?.message ?? "Chrome target evaluation failed."));
+        return;
+      }
+
+      resolve(message.result?.result?.value as T);
+    };
+  });
+}
+
+function findSystemChromePath(configuredPath: string): string {
+  if (configuredPath && existsSync(configuredPath)) {
+    return configuredPath;
+  }
+
+  const candidates = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    join(homedir(), "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? "";
 }
 
 function isBlockedWebClipHtml(html: string): boolean {

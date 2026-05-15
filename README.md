@@ -22,6 +22,7 @@ Obsidian plugin that connects to a Memos instance and shows memos as editable ca
 6. Open plugin settings and enter your Memos personal access token.
 7. For web clipping, configure a local OpenAI-compatible LLM base URL and model name.
 8. If a site rejects anonymous clipping, paste the site's browser Cookie header into `Web clip cookie`.
+9. Optionally set `System Chrome path` when the plugin cannot auto-detect Chrome for protected pages.
 
 The default server URL is `https://memos.adoom-cloud.top:1443`, but it can be changed in settings.
 
