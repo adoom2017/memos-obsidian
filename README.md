@@ -25,7 +25,7 @@ Desktop Obsidian plugin that connects to a Memos instance and shows memos as edi
 8. If a site rejects anonymous clipping, paste the site's browser Cookie header into `Web clip cookie`.
 9. Optionally set `System Chrome path` when the plugin cannot auto-detect Chrome for protected pages.
 
-The default server URL is `https://memos.adoom-cloud.top:1443`, but it can be changed in settings.
+The default server URL is the placeholder `https://memos.example.com`; replace it with your own Memos instance in settings.
 
 This plugin is desktop-only because browser clipping and protected-page fallbacks use local Node/Electron APIs.
 

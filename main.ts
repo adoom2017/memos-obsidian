@@ -176,7 +176,7 @@ interface BrowserClipResponse {
 }
 
 const DEFAULT_SETTINGS: MemosPluginSettings = {
-  baseUrl: "https://memos.adoom-cloud.top:1443",
+  baseUrl: "https://memos.example.com",
   token: "",
   pageSize: 20,
   memoVisibility: "PRIVATE",
