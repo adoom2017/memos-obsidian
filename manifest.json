@@ -1,0 +1,10 @@
+{
+  "id": "memos-card-view",
+  "name": "Memos Card View",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Connect to Memos and manage memo records in a card view.",
+  "author": "shendongchun",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}

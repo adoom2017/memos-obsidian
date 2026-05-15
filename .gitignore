@@ -1,0 +1,11 @@
+.agents
+.claude
+.codex
+.trellis
+dist
+main.js
+node_modules
+__pycache__
+*.pyc
+*.map
+data.json

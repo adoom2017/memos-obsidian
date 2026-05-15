@@ -1,0 +1,23 @@
+{
+  "name": "memos-card-view",
+  "version": "0.1.0",
+  "description": "Obsidian plugin for viewing and editing Memos records as cards.",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "node scripts/copy-assets.mjs && node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node scripts/copy-assets.mjs && node esbuild.config.mjs production"
+  },
+  "keywords": [
+    "obsidian",
+    "memos"
+  ],
+  "author": "shendongchun",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.28.0",
+    "obsidian": "^1.7.2",
+    "typescript": "^5.6.3"
+  }
+}

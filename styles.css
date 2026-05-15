@@ -1,0 +1,182 @@
+.memos-view {
+  --memos-gap: 12px;
+  --memos-border: var(--background-modifier-border);
+  --memos-card-bg: var(--background-primary);
+  --memos-muted: var(--text-muted);
+  padding: 16px;
+}
+
+.memos-toolbar {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--memos-border);
+  display: flex;
+  gap: var(--memos-gap);
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+}
+
+.memos-title-group {
+  min-width: 0;
+}
+
+.memos-title-group h2 {
+  font-size: 1.35rem;
+  line-height: 1.2;
+  margin: 0;
+}
+
+.memos-subtitle {
+  color: var(--memos-muted);
+  display: block;
+  font-size: 0.82rem;
+  margin-top: 4px;
+}
+
+.memos-toolbar-actions,
+.memos-card-actions,
+.memos-modal-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.memos-button,
+.memos-icon-button,
+.memos-load-more-button {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  justify-content: center;
+}
+
+.memos-icon-button {
+  height: 32px;
+  padding: 0;
+  width: 32px;
+}
+
+.memos-status {
+  color: var(--memos-muted);
+  font-size: 0.86rem;
+  min-height: 22px;
+}
+
+.memos-status.is-error {
+  color: var(--text-error);
+}
+
+.memos-card-list {
+  display: grid;
+  gap: var(--memos-gap);
+}
+
+.memos-card {
+  background: var(--memos-card-bg);
+  border: 1px solid var(--memos-border);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.memos-card-header {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--memos-gap);
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.memos-card-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.memos-pill,
+.memos-tag {
+  background: var(--background-secondary);
+  border: 1px solid var(--memos-border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.2;
+  padding: 3px 8px;
+}
+
+.memos-pill-pin {
+  color: var(--text-accent);
+}
+
+.memos-card-date {
+  color: var(--memos-muted);
+  font-size: 0.78rem;
+}
+
+.memos-card-content {
+  overflow-wrap: anywhere;
+}
+
+.memos-card-content > :first-child {
+  margin-top: 0;
+}
+
+.memos-card-content > :last-child {
+  margin-bottom: 0;
+}
+
+.memos-tag-list,
+.memos-attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.memos-attachment {
+  border: 1px solid var(--memos-border);
+  border-radius: 6px;
+  font-size: 0.78rem;
+  padding: 4px 8px;
+  text-decoration: none;
+}
+
+.memos-attachment.is-disabled {
+  color: var(--text-faint);
+}
+
+.memos-load-more {
+  display: flex;
+  justify-content: center;
+  min-height: 44px;
+  padding-top: 12px;
+}
+
+.memos-editor {
+  min-height: 220px;
+  resize: vertical;
+  width: 100%;
+}
+
+.memos-modal-actions {
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+@media (max-width: 520px) {
+  .memos-view {
+    padding: 12px;
+  }
+
+  .memos-toolbar,
+  .memos-card-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .memos-toolbar-actions,
+  .memos-card-actions {
+    justify-content: flex-start;
+  }
+}
