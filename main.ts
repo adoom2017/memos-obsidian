@@ -257,11 +257,9 @@ class MemosCardView extends ItemView {
 
     const toolbar = this.contentEl.createDiv({ cls: "memos-toolbar" });
     const titleGroup = toolbar.createDiv({ cls: "memos-title-group" });
+    const titleIcon = titleGroup.createSpan({ cls: "memos-title-icon" });
+    setIcon(titleIcon, "sticky-note");
     titleGroup.createEl("h2", { text: "Memos" });
-    titleGroup.createEl("span", {
-      cls: "memos-subtitle",
-      text: "Cards from your configured Memos instance",
-    });
 
     const actions = toolbar.createDiv({ cls: "memos-toolbar-actions" });
     this.createActionButton(actions, "plus", "New memo", () => {
