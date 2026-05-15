@@ -69,6 +69,15 @@ interface ChromeEvalResponse<T> {
   };
 }
 
+interface ChromeClipSnapshot {
+  html?: string;
+  title?: string;
+  text?: string;
+  url?: string;
+  readyState?: string;
+  hasReadableContainer?: boolean;
+}
+
 interface MemosPluginSettings {
   baseUrl: string;
   token: string;
@@ -151,6 +160,8 @@ const DEFAULT_SETTINGS: MemosPluginSettings = {
 };
 const WEB_CLIP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const WEB_CLIP_CHROME_DEBUG_PORT = 9223;
+const WEB_CLIP_CHROME_READINESS_TIMEOUT_MS = 25000;
+const WEB_CLIP_CHROME_READINESS_POLL_MS = 750;
 
 export default class MemosCardPlugin extends Plugin {
   settings: MemosPluginSettings;
@@ -1231,16 +1242,7 @@ async function fetchWebClipPageWithSystemChrome(
       return "";
     }
 
-    await delay(4500);
-    const html = await evaluateChromeTarget<string>(
-      target.webSocketDebuggerUrl,
-      "document.documentElement ? document.documentElement.outerHTML : ''",
-    );
-    if (!html || isBlockedWebClipHtml(html)) {
-      return "";
-    }
-
-    return html;
+    return await waitForChromeReadablePage(target.webSocketDebuggerUrl);
   } catch {
     return "";
   } finally {
@@ -1248,6 +1250,78 @@ async function fetchWebClipPageWithSystemChrome(
       void closeChromeDebugTarget(target.id);
     }
   }
+}
+
+async function waitForChromeReadablePage(webSocketDebuggerUrl: string): Promise<string> {
+  const deadline = Date.now() + WEB_CLIP_CHROME_READINESS_TIMEOUT_MS;
+  let lastReadableHtml = "";
+
+  while (Date.now() < deadline) {
+    try {
+      const snapshot = await evaluateChromeTarget<ChromeClipSnapshot>(
+        webSocketDebuggerUrl,
+        `(() => {
+          const selectors = [
+            "article",
+            "main",
+            "[role='main']",
+            ".Post-RichTextContainer",
+            ".RichContent-inner",
+            ".RichText",
+            ".Post-content"
+          ];
+          const readableContainer = selectors
+            .map((selector) => document.querySelector(selector))
+            .find(Boolean);
+          const source = readableContainer || document.body || document.documentElement;
+          const text = source
+            ? ("innerText" in source ? source.innerText : source.textContent || "")
+            : "";
+          return {
+            html: document.documentElement ? document.documentElement.outerHTML : "",
+            title: document.title || "",
+            text: text.slice(0, 6000),
+            url: location.href,
+            readyState: document.readyState,
+            hasReadableContainer: !!readableContainer
+          };
+        })()`,
+      );
+
+      if (snapshot?.html && !isBlockedWebClipHtml(snapshot.html)) {
+        lastReadableHtml = snapshot.html;
+        if (isReadableChromeSnapshot(snapshot)) {
+          return snapshot.html;
+        }
+      }
+    } catch {
+      // Navigation can briefly invalidate the debugging context; keep polling.
+    }
+
+    await delay(WEB_CLIP_CHROME_READINESS_POLL_MS);
+  }
+
+  return lastReadableHtml;
+}
+
+function isReadableChromeSnapshot(snapshot: ChromeClipSnapshot): boolean {
+  const title = normalizeWhitespace(snapshot.title ?? "").toLowerCase();
+  const text = normalizeWhitespace(snapshot.text ?? "");
+  const ready = snapshot.readyState === "interactive" || snapshot.readyState === "complete";
+
+  if (title.includes("403") || title.includes("forbidden")) {
+    return false;
+  }
+
+  if (snapshot.hasReadableContainer && text.length >= 120) {
+    return true;
+  }
+
+  if (text.length >= 800) {
+    return true;
+  }
+
+  return ready && text.length >= 300;
 }
 
 async function ensureChromeDebugServer(chromePath: string): Promise<void> {
@@ -1382,7 +1456,10 @@ function isBlockedWebClipHtml(html: string): boolean {
   return title.includes("403")
     || title.includes("forbidden")
     || body.startsWith("403 forbidden")
-    || body.includes("access denied");
+    || body.includes("access denied")
+    || body.includes('"code":40362')
+    || body.includes("请求存在异常")
+    || body.includes("暂时限制本次访问");
 }
 
 function parseWebClipHtml(url: string, html: string): WebClipPage {
