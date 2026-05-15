@@ -159,7 +159,7 @@ const DEFAULT_SETTINGS: MemosPluginSettings = {
   webClipChromePath: "",
 };
 const WEB_CLIP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-const WEB_CLIP_CHROME_DEBUG_PORT = 9223;
+const WEB_CLIP_CHROME_DEBUG_PORT = 9224;
 const WEB_CLIP_CHROME_READINESS_TIMEOUT_MS = 25000;
 const WEB_CLIP_CHROME_READINESS_POLL_MS = 750;
 
@@ -1353,7 +1353,10 @@ async function canReachChromeDebugServer(): Promise<boolean> {
 function launchChromeDebugServer(chromePath: string): void {
   const child = spawn(chromePath, [
     `--remote-debugging-port=${WEB_CLIP_CHROME_DEBUG_PORT}`,
-    `--user-data-dir=${join(tmpdir(), "memos-card-view-chrome")}`,
+    `--user-data-dir=${join(tmpdir(), "memos-card-view-headless-chrome")}`,
+    "--headless=new",
+    "--disable-gpu",
+    "--window-size=1280,900",
     "--no-first-run",
     "--no-default-browser-check",
     "about:blank",
