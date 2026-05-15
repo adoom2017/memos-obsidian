@@ -24,6 +24,7 @@ interface MemosPluginSettings {
   llmBaseUrl: string;
   llmModel: string;
   llmApiKey: string;
+  webClipCookie: string;
 }
 
 interface MemosAttachment {
@@ -92,6 +93,7 @@ const DEFAULT_SETTINGS: MemosPluginSettings = {
   llmBaseUrl: "http://127.0.0.1:8080/v1",
   llmModel: "",
   llmApiKey: "",
+  webClipCookie: "",
 };
 
 export default class MemosCardPlugin extends Plugin {
@@ -583,7 +585,7 @@ class MemosCardView extends ItemView {
     setStatus: (message: string) => void,
   ): Promise<MemosMemo> {
     setStatus("Fetching web page...");
-    const page = await fetchWebClipPage(inputUrl);
+    const page = await fetchWebClipPage(inputUrl, this.plugin.settings);
 
     setStatus("Generating summary...");
     const result = await summarizeWebClipPage(page, this.plugin.settings);
@@ -593,7 +595,7 @@ class MemosCardView extends ItemView {
     if (result.imageUrl) {
       try {
         setStatus("Saving hero image...");
-        const image = await downloadWebClipImage(result.imageUrl, page.url);
+        const image = await downloadWebClipImage(result.imageUrl, page.url, this.plugin.settings);
         attachments.push(
           await this.plugin.api.createAttachmentFromArrayBuffer(
             image.filename,
@@ -1043,18 +1045,40 @@ class MemosSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+
+    new Setting(containerEl)
+      .setName("Web clip cookie")
+      .setDesc("Optional. Paste browser cookies for sites that reject anonymous clipping, such as Zhihu.")
+      .addTextArea((text) => {
+        text.inputEl.rows = 3;
+        text
+          .setPlaceholder("Optional Cookie header")
+          .setValue(this.plugin.settings.webClipCookie)
+          .onChange(async (value) => {
+            this.plugin.settings.webClipCookie = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
   }
 }
 
-async function fetchWebClipPage(inputUrl: string): Promise<WebClipPage> {
+async function fetchWebClipPage(
+  inputUrl: string,
+  settings: MemosPluginSettings,
+): Promise<WebClipPage> {
   const url = normalizeWebUrl(inputUrl);
   const response = await requestUrl({
     url,
     method: "GET",
+    headers: webClipRequestHeaders(settings, url),
     throw: false,
   });
 
   if (response.status < 200 || response.status >= 300) {
+    if (response.status === 403 && isZhihuUrl(url) && !settings.webClipCookie.trim()) {
+      throw new Error("Zhihu returned 403. Configure Web clip cookie in plugin settings, then retry.");
+    }
+
     throw new Error(`Web page request failed (${response.status}).`);
   }
 
@@ -1163,11 +1187,16 @@ async function summarizeWebClipPage(
   throw new Error("Local LLM returned an empty summary.");
 }
 
-async function downloadWebClipImage(imageUrl: string, pageUrl: string): Promise<DownloadedImage> {
+async function downloadWebClipImage(
+  imageUrl: string,
+  pageUrl: string,
+  settings: MemosPluginSettings,
+): Promise<DownloadedImage> {
   const url = resolveHttpUrl(imageUrl, pageUrl);
   const response = await requestUrl({
     url,
     method: "GET",
+    headers: webClipRequestHeaders(settings, pageUrl),
     throw: false,
   });
 
@@ -1211,6 +1240,40 @@ function normalizeWebUrl(inputUrl: string): string {
   }
 
   return url.toString();
+}
+
+function webClipRequestHeaders(
+  settings: MemosPluginSettings,
+  refererUrl: string,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    Referer: siteOrigin(refererUrl),
+  };
+
+  if (settings.webClipCookie.trim()) {
+    headers.Cookie = settings.webClipCookie.trim();
+  }
+
+  return headers;
+}
+
+function siteOrigin(url: string): string {
+  try {
+    return `${new URL(url).origin}/`;
+  } catch {
+    return "";
+  }
+}
+
+function isZhihuUrl(url: string): boolean {
+  try {
+    return new URL(url).hostname.endsWith("zhihu.com");
+  } catch {
+    return false;
+  }
 }
 
 function findCanonicalUrl(doc: Document, fallbackUrl: string): string {
