@@ -63,7 +63,7 @@ interface WebClipPage {
   title: string;
   description: string;
   text: string;
-  imageUrl: string;
+  imageCandidates: string[];
 }
 
 interface DownloadedImage {
@@ -78,6 +78,11 @@ interface OpenAiChatResponse {
       content?: string;
     };
   }>;
+}
+
+interface WebClipSummary {
+  summary: string;
+  imageUrl: string;
 }
 
 const DEFAULT_SETTINGS: MemosPluginSettings = {
@@ -581,14 +586,14 @@ class MemosCardView extends ItemView {
     const page = await fetchWebClipPage(inputUrl);
 
     setStatus("Generating summary...");
-    const summary = await summarizeWebClipPage(page, this.plugin.settings);
-    const content = buildWebClipMemoContent(page, summary);
+    const result = await summarizeWebClipPage(page, this.plugin.settings);
+    const content = buildWebClipMemoContent(page, result.summary);
     const attachments: MemosAttachment[] = [];
 
-    if (page.imageUrl) {
+    if (result.imageUrl) {
       try {
         setStatus("Saving hero image...");
-        const image = await downloadWebClipImage(page.imageUrl, page.url);
+        const image = await downloadWebClipImage(result.imageUrl, page.url);
         attachments.push(
           await this.plugin.api.createAttachmentFromArrayBuffer(
             image.filename,
@@ -1065,7 +1070,7 @@ async function fetchWebClipPage(inputUrl: string): Promise<WebClipPage> {
       || getMetaContent(doc, "meta[property='og:description']")
       || getMetaContent(doc, "meta[name='twitter:description']"),
   );
-  const imageUrl = findHeroImageUrl(doc, url);
+  const imageCandidates = findImageCandidates(doc, url);
   const text = extractReadableText(doc, description);
 
   if (!text && !description) {
@@ -1077,14 +1082,14 @@ async function fetchWebClipPage(inputUrl: string): Promise<WebClipPage> {
     title,
     description,
     text,
-    imageUrl,
+    imageCandidates,
   };
 }
 
 async function summarizeWebClipPage(
   page: WebClipPage,
   settings: MemosPluginSettings,
-): Promise<string> {
+): Promise<WebClipSummary> {
   const baseUrl = settings.llmBaseUrl.trim().replace(/\/+$/, "");
   const model = settings.llmModel.trim();
 
@@ -1113,7 +1118,12 @@ async function summarizeWebClipPage(
       messages: [
         {
           role: "system",
-          content: "你是一个网页剪藏助手。只根据用户提供的网页内容生成中文摘要，不要编造原文没有的信息。",
+          content: [
+            "你是一个网页剪藏助手。只根据用户提供的网页内容生成中文摘要，不要编造原文没有的信息。",
+            "你还需要从用户提供的候选图片 URL 中选择最适合作为头图的一张。",
+            "如果候选图片为空，或者没有合适图片，imageUrl 必须返回空字符串。",
+            "只输出 JSON，格式为 {\"summary\":\"...\",\"imageUrl\":\"...\"}。",
+          ].join(""),
         },
         {
           role: "user",
@@ -1121,6 +1131,7 @@ async function summarizeWebClipPage(
             `标题：${page.title}`,
             page.description ? `网页描述：${page.description}` : "",
             `原文链接：${page.url}`,
+            `候选图片URL：${page.imageCandidates.length ? page.imageCandidates.join("\n") : "无"}`,
             "",
             "请用 3-5 句话总结下面网页的核心内容，保留关键信息和结论：",
             truncateText(page.text, 12000),
@@ -1137,13 +1148,16 @@ async function summarizeWebClipPage(
   }
 
   const data = response.json as OpenAiChatResponse;
-  const summary = data.choices?.[0]?.message?.content?.trim() ?? "";
-  if (summary) {
-    return summary;
-  }
+  const content = data.choices?.[0]?.message?.content?.trim() ?? "";
+  const parsed = parseWebClipSummary(content);
+  const summary = parsed.summary || page.description;
+  const imageUrl = page.imageCandidates.includes(parsed.imageUrl) ? parsed.imageUrl : "";
 
-  if (page.description) {
-    return page.description;
+  if (summary) {
+    return {
+      summary,
+      imageUrl,
+    };
   }
 
   throw new Error("Local LLM returned an empty summary.");
@@ -1216,13 +1230,50 @@ function getMetaContent(doc: Document, selector: string): string {
   return doc.querySelector(selector)?.getAttribute("content")?.trim() ?? "";
 }
 
-function findHeroImageUrl(doc: Document, pageUrl: string): string {
+function parseWebClipSummary(content: string): WebClipSummary {
+  const fallback: WebClipSummary = {
+    summary: content.trim(),
+    imageUrl: "",
+  };
+
+  if (!content) {
+    return fallback;
+  }
+
+  try {
+    const parsed = JSON.parse(extractJsonObject(content)) as Partial<WebClipSummary>;
+    return {
+      summary: typeof parsed.summary === "string" ? parsed.summary.trim() : fallback.summary,
+      imageUrl: typeof parsed.imageUrl === "string" ? parsed.imageUrl.trim() : "",
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function extractJsonObject(content: string): string {
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+
+  const start = content.indexOf("{");
+  const end = content.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    return content.slice(start, end + 1);
+  }
+
+  return content;
+}
+
+function findImageCandidates(doc: Document, pageUrl: string): string[] {
+  const candidates: string[] = [];
   const metaImage = getMetaContent(doc, "meta[property='og:image']")
     || getMetaContent(doc, "meta[name='twitter:image']");
 
   if (metaImage) {
     try {
-      return resolveHttpUrl(metaImage, pageUrl);
+      candidates.push(resolveHttpUrl(metaImage, pageUrl));
     } catch {
       // Continue to regular image candidates.
     }
@@ -1235,13 +1286,13 @@ function findHeroImageUrl(doc: Document, pageUrl: string): string {
     }
 
     try {
-      return resolveHttpUrl(src, pageUrl);
+      candidates.push(resolveHttpUrl(src, pageUrl));
     } catch {
       continue;
     }
   }
 
-  return "";
+  return Array.from(new Set(candidates)).slice(0, 12);
 }
 
 function extractReadableText(doc: Document, description: string): string {
