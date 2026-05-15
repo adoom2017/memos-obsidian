@@ -3,6 +3,7 @@
 .codex
 .trellis
 dist
+release
 main.js
 node_modules
 __pycache__

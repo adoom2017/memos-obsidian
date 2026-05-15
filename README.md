@@ -41,5 +41,28 @@ The extension sends extracted title, URL, readable text, description, and visibl
 
 * `npm run dev` starts esbuild watch mode and writes generated files into `dist/`.
 * `npm run build` runs TypeScript checking and writes production plugin files into `dist/`.
+* `npm run package` builds the Obsidian plugin and writes release artifacts into `release/`.
+
+## Release Packaging
+
+Run:
+
+```bash
+npm run package
+```
+
+The script validates version consistency across `package.json`, the Obsidian
+manifest, the browser extension manifest, and `versions.json`. It then creates:
+
+* `release/obsidian/main.js`
+* `release/obsidian/manifest.json`
+* `release/obsidian/styles.css`
+* `release/memos-card-view-<version>-obsidian.zip`
+* `release/memos-obsidian-clipper-<version>-chrome.zip`
+* `release/README-release.md`
+
+For Obsidian Community Plugin GitHub releases, upload the three files under
+`release/obsidian/` as release assets. For Chrome or Edge extension stores,
+upload `release/memos-obsidian-clipper-<version>-chrome.zip`.
 
 Do not commit personal access tokens or Obsidian `data.json`.
