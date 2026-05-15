@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Memos Obsidian Clipper">
+  <defs>
+    <linearGradient id="bg" x1="18" y1="12" x2="112" y2="116" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7c5cff"/>
+      <stop offset="1" stop-color="#2f6fed"/>
+    </linearGradient>
+    <linearGradient id="card" x1="36" y1="22" x2="92" y2="101" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f2f5ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#bg)"/>
+  <path d="M37 25h42l20 20v56c0 7-5 12-12 12H37c-7 0-12-5-12-12V37c0-7 5-12 12-12z" fill="url(#card)"/>
+  <path d="M79 25v16c0 3 2 5 5 5h15" fill="#dce5ff"/>
+  <path d="M42 55h42M42 70h34M42 85h24" fill="none" stroke="#456079" stroke-width="8" stroke-linecap="round"/>
+  <path d="M82 80l17 17M99 97H78M99 97V76" fill="none" stroke="#18b778" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="33" cy="34" r="7" fill="#18b778"/>
+</svg>
