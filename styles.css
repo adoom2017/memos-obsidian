@@ -140,6 +140,22 @@
   margin-top: 12px;
 }
 
+.memos-image-attachment {
+  border: 1px solid var(--memos-border);
+  border-radius: 8px;
+  display: block;
+  overflow: hidden;
+  width: min(100%, 420px);
+}
+
+.memos-image-attachment img {
+  display: block;
+  height: auto;
+  max-height: 280px;
+  object-fit: cover;
+  width: 100%;
+}
+
 .memos-attachment {
   border: 1px solid var(--memos-border);
   border-radius: 6px;

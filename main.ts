@@ -456,6 +456,25 @@ class MemosCardView extends ItemView {
 
     const attachmentList = parent.createDiv({ cls: "memos-attachment-list" });
     for (const attachment of attachments) {
+      if (isImageAttachment(attachment) && attachment.externalLink) {
+        const imageLink = attachmentList.createEl("a", {
+          cls: "memos-image-attachment",
+          attr: {
+            href: attachment.externalLink,
+            target: "_blank",
+            rel: "noopener",
+          },
+        });
+        imageLink.createEl("img", {
+          attr: {
+            src: attachment.externalLink,
+            alt: attachment.filename ?? attachment.name,
+            loading: "lazy",
+          },
+        });
+        continue;
+      }
+
       const link = attachmentList.createEl("a", {
         cls: "memos-attachment",
         text: attachment.filename ?? attachment.name,
@@ -1316,6 +1335,10 @@ function extensionFromType(type: string): string {
   if (type === "image/webp") return ".webp";
   if (type === "image/avif") return ".avif";
   return "";
+}
+
+function isImageAttachment(attachment: MemosAttachment): boolean {
+  return (attachment.type ?? "").toLowerCase().startsWith("image/");
 }
 
 function formatDate(value?: string): string {
