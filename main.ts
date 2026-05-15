@@ -7,6 +7,7 @@ import {
   Notice,
   Plugin,
   PluginSettingTab,
+  Platform,
   RequestUrlParam,
   Setting,
   WorkspaceLeaf,
@@ -16,6 +17,32 @@ import {
 
 const MEMOS_VIEW_TYPE = "memos-card-view";
 type MemosViewLocation = "main" | "right";
+declare const require: (module: string) => unknown;
+
+interface ElectronBrowserWindow {
+  loadURL(url: string, options?: { userAgent?: string; httpReferrer?: string }): Promise<void>;
+  destroy(): void;
+  webContents: {
+    executeJavaScript<T>(code: string): Promise<T>;
+    session: {
+      cookies: {
+        set(details: {
+          url: string;
+          name: string;
+          value: string;
+          domain?: string;
+          path?: string;
+          secure?: boolean;
+          httpOnly?: boolean;
+        }): Promise<void>;
+      };
+    };
+  };
+}
+
+interface ElectronModule {
+  BrowserWindow: new (options: Record<string, unknown>) => ElectronBrowserWindow;
+}
 
 interface MemosPluginSettings {
   baseUrl: string;
@@ -95,6 +122,7 @@ const DEFAULT_SETTINGS: MemosPluginSettings = {
   llmApiKey: "",
   webClipCookie: "",
 };
+const WEB_CLIP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 export default class MemosCardPlugin extends Plugin {
   settings: MemosPluginSettings;
@@ -1067,6 +1095,11 @@ async function fetchWebClipPage(
   settings: MemosPluginSettings,
 ): Promise<WebClipPage> {
   const url = normalizeWebUrl(inputUrl);
+  const browserHtml = await fetchWebClipPageWithBrowser(url, settings);
+  if (browserHtml) {
+    return parseWebClipHtml(url, browserHtml);
+  }
+
   const response = await requestUrl({
     url,
     method: "GET",
@@ -1082,7 +1115,67 @@ async function fetchWebClipPage(
     throw new Error(`Web page request failed (${response.status}).`);
   }
 
-  const doc = new DOMParser().parseFromString(response.text, "text/html");
+  return parseWebClipHtml(url, response.text);
+}
+
+async function fetchWebClipPageWithBrowser(
+  url: string,
+  settings: MemosPluginSettings,
+): Promise<string> {
+  if (!Platform.isDesktopApp) {
+    return "";
+  }
+
+  let win: ElectronBrowserWindow | null = null;
+  try {
+    const electron = require("electron") as ElectronModule;
+    win = new electron.BrowserWindow({
+      width: 1280,
+      height: 900,
+      show: false,
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        images: true,
+        javascript: true,
+      },
+    });
+
+    await applyBrowserCookies(win, url, settings.webClipCookie);
+    await win.loadURL(url, {
+      userAgent: WEB_CLIP_USER_AGENT,
+      httpReferrer: siteOrigin(url),
+    });
+    await delay(2500);
+
+    const html = await win.webContents.executeJavaScript<string>(
+      "document.documentElement ? document.documentElement.outerHTML : ''",
+    );
+    if (!html || isBlockedWebClipHtml(html)) {
+      return "";
+    }
+
+    return html;
+  } catch {
+    return "";
+  } finally {
+    win?.destroy();
+  }
+}
+
+function isBlockedWebClipHtml(html: string): boolean {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const title = normalizeWhitespace(doc.title).toLowerCase();
+  const body = normalizeWhitespace(doc.body?.textContent ?? "").toLowerCase();
+  return title.includes("403")
+    || title.includes("forbidden")
+    || body.startsWith("403 forbidden")
+    || body.includes("access denied");
+}
+
+function parseWebClipHtml(url: string, html: string): WebClipPage {
+  const doc = new DOMParser().parseFromString(html, "text/html");
   const title = normalizeWhitespace(
     getMetaContent(doc, "meta[property='og:title']")
       || getMetaContent(doc, "meta[name='twitter:title']")
@@ -1247,7 +1340,7 @@ function webClipRequestHeaders(
   refererUrl: string,
 ): Record<string, string> {
   const headers: Record<string, string> = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "User-Agent": WEB_CLIP_USER_AGENT,
     Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     Referer: siteOrigin(refererUrl),
@@ -1258,6 +1351,54 @@ function webClipRequestHeaders(
   }
 
   return headers;
+}
+
+async function applyBrowserCookies(
+  win: ElectronBrowserWindow,
+  url: string,
+  cookieHeader: string,
+): Promise<void> {
+  const cookies = parseCookieHeader(cookieHeader);
+  if (!cookies.length) {
+    return;
+  }
+
+  const target = new URL(url);
+  for (const cookie of cookies) {
+    await win.webContents.session.cookies.set({
+      url: target.origin,
+      name: cookie.name,
+      value: cookie.value,
+      domain: target.hostname,
+      path: "/",
+      secure: target.protocol === "https:",
+    });
+  }
+}
+
+function parseCookieHeader(cookieHeader: string): Array<{ name: string; value: string }> {
+  return cookieHeader
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const separator = part.indexOf("=");
+      if (separator < 1) {
+        return null;
+      }
+
+      return {
+        name: part.slice(0, separator).trim(),
+        value: part.slice(separator + 1).trim(),
+      };
+    })
+    .filter((cookie): cookie is { name: string; value: string } => cookie !== null);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
 }
 
 function siteOrigin(url: string): string {

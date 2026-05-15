@@ -9,7 +9,7 @@ Obsidian plugin that connects to a Memos instance and shows memos as editable ca
 * Refresh, page through, create, edit, and delete memos.
 * Create and edit memos with live Markdown preview.
 * Upload files as Memos attachments when creating or editing memos.
-* Clip web pages by URL, summarize them with a local OpenAI-compatible LLM, and save the summary plus source link to Memos.
+* Clip web pages by URL, using Obsidian desktop's embedded browser when available, summarize them with a local OpenAI-compatible LLM, and save the summary plus source link to Memos.
 * Render memo Markdown content and show tags, visibility, pinned state, timestamps, and attachment links.
 
 ## Install Locally
