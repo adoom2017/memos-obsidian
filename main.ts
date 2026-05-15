@@ -2,6 +2,7 @@ import {
   App,
   Component,
   ItemView,
+  Menu,
   MarkdownRenderer,
   Modal,
   Notice,
@@ -477,6 +478,10 @@ class MemosCardView extends ItemView {
 
     for (const memo of this.memos) {
       const card = this.listEl.createDiv({ cls: "memos-card" });
+      card.oncontextmenu = (event) => {
+        this.openMemoContextMenu(event, memo, card);
+      };
+
       const header = card.createDiv({ cls: "memos-card-header" });
       const meta = header.createDiv({ cls: "memos-card-meta" });
 
@@ -518,6 +523,55 @@ class MemosCardView extends ItemView {
       this.renderTags(card, memo.tags ?? []);
       this.renderAttachments(card, memo.attachments ?? []);
     }
+  }
+
+  private openMemoContextMenu(event: MouseEvent, memo: MemosMemo, card: HTMLElement): void {
+    event.preventDefault();
+
+    const selectedText = getSelectedTextWithin(card);
+    const content = memo.content?.trim() ?? "";
+    const menu = new Menu();
+
+    if (selectedText) {
+      menu.addItem((item) => {
+        item
+          .setTitle("Copy selected text")
+          .setIcon("copy")
+          .onClick(() => {
+            void copyTextToClipboard(selectedText, "Selected text copied.");
+          });
+      });
+    }
+
+    menu.addItem((item) => {
+      item
+        .setTitle("Copy memo content")
+        .setIcon("clipboard-copy")
+        .setDisabled(!content)
+        .onClick(() => {
+          void copyTextToClipboard(content, "Memo content copied.");
+        });
+    });
+
+    menu.addSeparator();
+    menu.addItem((item) => {
+      item
+        .setTitle("Edit memo")
+        .setIcon("pencil")
+        .onClick(() => {
+          this.openEditModal(memo);
+        });
+    });
+    menu.addItem((item) => {
+      item
+        .setTitle("Delete memo")
+        .setIcon("trash-2")
+        .onClick(() => {
+          this.openDeleteModal(memo);
+        });
+    });
+
+    menu.showAtMouseEvent(event);
   }
 
   private renderTags(parent: HTMLElement, tags: string[]): void {
@@ -2000,6 +2054,48 @@ function formatFileSize(size: number): string {
   }
 
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function getSelectedTextWithin(container: HTMLElement): string {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) {
+    return "";
+  }
+
+  const range = selection.getRangeAt(0);
+  const startsInside = container.contains(range.startContainer);
+  const endsInside = container.contains(range.endContainer);
+  if (!startsInside && !endsInside) {
+    return "";
+  }
+
+  return selection.toString().trim();
+}
+
+async function copyTextToClipboard(text: string, successMessage: string): Promise<void> {
+  const value = text.trim();
+  if (!value) {
+    new Notice("Nothing to copy.");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    copyTextWithTextarea(value);
+  }
+
+  new Notice(successMessage);
+}
+
+function copyTextWithTextarea(text: string): void {
+  const textarea = document.body.createEl("textarea");
+  textarea.value = text;
+  textarea.addClass("memos-clipboard-buffer");
+  textarea.setAttribute("readonly", "true");
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
 }
 
 function getErrorMessage(error: unknown): string {
