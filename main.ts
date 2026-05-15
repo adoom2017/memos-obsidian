@@ -69,7 +69,13 @@ interface ChromeEvalResponse<T> {
   };
 }
 
-interface ChromeClipSnapshot {
+interface WebClipPageAttempt {
+  page?: WebClipPage;
+  fallbackError?: Error;
+  fatalError?: Error;
+}
+
+interface WebClipReadinessSnapshot {
   html?: string;
   title?: string;
   text?: string;
@@ -160,8 +166,10 @@ const DEFAULT_SETTINGS: MemosPluginSettings = {
 };
 const WEB_CLIP_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const WEB_CLIP_CHROME_DEBUG_PORT = 9224;
+const WEB_CLIP_BROWSER_READINESS_TIMEOUT_MS = 8000;
 const WEB_CLIP_CHROME_READINESS_TIMEOUT_MS = 25000;
 const WEB_CLIP_CHROME_READINESS_POLL_MS = 750;
+const WEB_CLIP_BROWSER_READINESS_POLL_MS = 350;
 
 export default class MemosCardPlugin extends Plugin {
   settings: MemosPluginSettings;
@@ -1147,6 +1155,14 @@ async function fetchWebClipPage(
   settings: MemosPluginSettings,
 ): Promise<WebClipPage> {
   const url = normalizeWebUrl(inputUrl);
+  const requestAttempt = await fetchWebClipPageWithRequestUrl(url, settings);
+  if (requestAttempt.page) {
+    return requestAttempt.page;
+  }
+  if (requestAttempt.fatalError) {
+    throw requestAttempt.fatalError;
+  }
+
   const browserHtml = await fetchWebClipPageWithBrowser(url, settings);
   if (browserHtml) {
     return parseWebClipHtml(url, browserHtml);
@@ -1157,22 +1173,58 @@ async function fetchWebClipPage(
     return parseWebClipHtml(url, systemChromeHtml);
   }
 
-  const response = await requestUrl({
-    url,
-    method: "GET",
-    headers: webClipRequestHeaders(settings, url),
-    throw: false,
-  });
-
-  if (response.status < 200 || response.status >= 300) {
-    if (response.status === 403 && isZhihuUrl(url) && !settings.webClipCookie.trim()) {
-      throw new Error("Zhihu returned 403. Configure Web clip cookie in plugin settings, then retry.");
-    }
-
-    throw new Error(`Web page request failed (${response.status}).`);
+  if (requestAttempt.fallbackError) {
+    throw requestAttempt.fallbackError;
   }
 
-  return parseWebClipHtml(url, response.text);
+  throw new Error("No readable page content found.");
+}
+
+async function fetchWebClipPageWithRequestUrl(
+  url: string,
+  settings: MemosPluginSettings,
+): Promise<WebClipPageAttempt> {
+  let response: Awaited<ReturnType<typeof requestUrl>>;
+  try {
+    response = await requestUrl({
+      url,
+      method: "GET",
+      headers: webClipRequestHeaders(settings, url),
+      throw: false,
+    });
+  } catch (error) {
+    return {
+      fallbackError: new Error(`Web page request failed: ${getErrorMessage(error)}`),
+    };
+  }
+
+  if (response.status < 200 || response.status >= 300) {
+    const error = response.status === 403 && isZhihuUrl(url) && !settings.webClipCookie.trim()
+      ? new Error("Zhihu returned 403. Configure Web clip cookie in plugin settings, then retry.")
+      : new Error(`Web page request failed (${response.status}).`);
+
+    return response.status === 403
+      ? { fallbackError: error }
+      : { fatalError: error };
+  }
+
+  if (isBlockedWebClipHtml(response.text)) {
+    return {
+      fallbackError: new Error("Web page returned a blocked response."),
+    };
+  }
+
+  try {
+    return {
+      page: parseWebClipHtml(url, response.text),
+    };
+  } catch (error) {
+    return {
+      fallbackError: error instanceof Error
+        ? error
+        : new Error(getErrorMessage(error)),
+    };
+  }
 }
 
 async function fetchWebClipPageWithBrowser(
@@ -1204,21 +1256,39 @@ async function fetchWebClipPageWithBrowser(
       userAgent: WEB_CLIP_USER_AGENT,
       httpReferrer: siteOrigin(url),
     });
-    await delay(2500);
 
-    const html = await win.webContents.executeJavaScript<string>(
-      "document.documentElement ? document.documentElement.outerHTML : ''",
-    );
-    if (!html || isBlockedWebClipHtml(html)) {
-      return "";
-    }
-
-    return html;
+    return await waitForBrowserReadablePage(win);
   } catch {
     return "";
   } finally {
     win?.destroy();
   }
+}
+
+async function waitForBrowserReadablePage(win: ElectronBrowserWindow): Promise<string> {
+  const deadline = Date.now() + WEB_CLIP_BROWSER_READINESS_TIMEOUT_MS;
+  let lastReadableHtml = "";
+
+  while (Date.now() < deadline) {
+    try {
+      const snapshot = await win.webContents.executeJavaScript<WebClipReadinessSnapshot>(
+        webClipReadinessExpression(),
+      );
+
+      if (snapshot?.html && !isBlockedWebClipHtml(snapshot.html)) {
+        lastReadableHtml = snapshot.html;
+        if (isReadableWebClipSnapshot(snapshot)) {
+          return snapshot.html;
+        }
+      }
+    } catch {
+      // Dynamic pages can briefly reload scripts while we sample the DOM.
+    }
+
+    await delay(WEB_CLIP_BROWSER_READINESS_POLL_MS);
+  }
+
+  return lastReadableHtml;
 }
 
 async function fetchWebClipPageWithSystemChrome(
@@ -1258,39 +1328,14 @@ async function waitForChromeReadablePage(webSocketDebuggerUrl: string): Promise<
 
   while (Date.now() < deadline) {
     try {
-      const snapshot = await evaluateChromeTarget<ChromeClipSnapshot>(
+      const snapshot = await evaluateChromeTarget<WebClipReadinessSnapshot>(
         webSocketDebuggerUrl,
-        `(() => {
-          const selectors = [
-            "article",
-            "main",
-            "[role='main']",
-            ".Post-RichTextContainer",
-            ".RichContent-inner",
-            ".RichText",
-            ".Post-content"
-          ];
-          const readableContainer = selectors
-            .map((selector) => document.querySelector(selector))
-            .find(Boolean);
-          const source = readableContainer || document.body || document.documentElement;
-          const text = source
-            ? ("innerText" in source ? source.innerText : source.textContent || "")
-            : "";
-          return {
-            html: document.documentElement ? document.documentElement.outerHTML : "",
-            title: document.title || "",
-            text: text.slice(0, 6000),
-            url: location.href,
-            readyState: document.readyState,
-            hasReadableContainer: !!readableContainer
-          };
-        })()`,
+        webClipReadinessExpression(),
       );
 
       if (snapshot?.html && !isBlockedWebClipHtml(snapshot.html)) {
         lastReadableHtml = snapshot.html;
-        if (isReadableChromeSnapshot(snapshot)) {
+        if (isReadableWebClipSnapshot(snapshot)) {
           return snapshot.html;
         }
       }
@@ -1304,7 +1349,36 @@ async function waitForChromeReadablePage(webSocketDebuggerUrl: string): Promise<
   return lastReadableHtml;
 }
 
-function isReadableChromeSnapshot(snapshot: ChromeClipSnapshot): boolean {
+function webClipReadinessExpression(): string {
+  return `(() => {
+    const selectors = [
+      "article",
+      "main",
+      "[role='main']",
+      ".Post-RichTextContainer",
+      ".RichContent-inner",
+      ".RichText",
+      ".Post-content"
+    ];
+    const readableContainer = selectors
+      .map((selector) => document.querySelector(selector))
+      .find(Boolean);
+    const source = readableContainer || document.body || document.documentElement;
+    const text = source
+      ? ("innerText" in source ? source.innerText : source.textContent || "")
+      : "";
+    return {
+      html: document.documentElement ? document.documentElement.outerHTML : "",
+      title: document.title || "",
+      text: text.slice(0, 6000),
+      url: location.href,
+      readyState: document.readyState,
+      hasReadableContainer: !!readableContainer
+    };
+  })()`;
+}
+
+function isReadableWebClipSnapshot(snapshot: WebClipReadinessSnapshot): boolean {
   const title = normalizeWhitespace(snapshot.title ?? "").toLowerCase();
   const text = normalizeWhitespace(snapshot.text ?? "");
   const ready = snapshot.readyState === "interactive" || snapshot.readyState === "complete";
