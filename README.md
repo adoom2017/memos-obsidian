@@ -4,9 +4,9 @@ Obsidian plugin that connects to a Memos instance and shows memos as editable ca
 
 ## Features
 
-* Configure Memos base URL, PAT, and page size in Obsidian settings.
+* Configure Memos base URL, PAT, page size, and default publish visibility in Obsidian settings.
 * Open a dedicated card view from the ribbon or command palette.
-* Refresh, page through, create, edit, and delete memos.
+* Refresh, page through, create, edit, delete, and choose private/public visibility for memos.
 * Create and edit memos with live Markdown preview.
 * Upload files as Memos attachments when creating or editing memos.
 * Clip web pages by URL, using Obsidian desktop's embedded browser when available, summarize them with a local OpenAI-compatible LLM, and save the summary plus source link to Memos.

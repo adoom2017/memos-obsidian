@@ -225,6 +225,23 @@
   font-size: 0.84rem;
 }
 
+.memos-publish-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-start;
+  margin-top: 12px;
+}
+
+.memos-publish-row label {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.memos-visibility-select {
+  min-width: 120px;
+}
+
 .memos-editor-attachments {
   border: 1px solid var(--memos-border);
   border-radius: 8px;

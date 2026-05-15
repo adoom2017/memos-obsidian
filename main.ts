@@ -22,6 +22,7 @@ import { join } from "path";
 
 const MEMOS_VIEW_TYPE = "memos-card-view";
 type MemosViewLocation = "main" | "right";
+type MemosVisibility = "PRIVATE" | "PUBLIC";
 declare const require: (module: string) => unknown;
 
 interface ElectronBrowserWindow {
@@ -89,6 +90,7 @@ interface MemosPluginSettings {
   baseUrl: string;
   token: string;
   pageSize: number;
+  memoVisibility: MemosVisibility;
   llmBaseUrl: string;
   llmModel: string;
   llmApiKey: string;
@@ -107,6 +109,7 @@ interface MemosAttachment {
 interface MemoEditorSubmit {
   content: string;
   files: File[];
+  visibility: MemosVisibility;
 }
 
 interface MemosMemo {
@@ -159,6 +162,7 @@ const DEFAULT_SETTINGS: MemosPluginSettings = {
   baseUrl: "https://memos.adoom-cloud.top:1443",
   token: "",
   pageSize: 20,
+  memoVisibility: "PRIVATE",
   llmBaseUrl: "http://127.0.0.1:8080/v1",
   llmModel: "",
   llmApiKey: "",
@@ -252,6 +256,7 @@ export default class MemosCardPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings.memoVisibility = normalizeMemoVisibility(this.settings.memoVisibility);
   }
 
   async saveSettings(): Promise<void> {
@@ -286,23 +291,35 @@ class MemosApiClient {
     });
   }
 
-  async createMemo(content: string, attachments: MemosAttachment[] = []): Promise<MemosMemo> {
+  async createMemo(
+    content: string,
+    attachments: MemosAttachment[] = [],
+    visibility?: MemosVisibility,
+  ): Promise<MemosMemo> {
+    const settings = this.getSettings();
     return this.request<MemosMemo>({
       url: this.url("/memos"),
       method: "POST",
       body: JSON.stringify({
         content,
-        visibility: "PRIVATE",
+        visibility: normalizeMemoVisibility(visibility ?? settings.memoVisibility),
         attachments,
       }),
     });
   }
 
-  async updateMemoContent(name: string, content: string): Promise<MemosMemo> {
+  async updateMemoContent(
+    name: string,
+    content: string,
+    visibility: MemosVisibility,
+  ): Promise<MemosMemo> {
     return this.request<MemosMemo>({
-      url: this.url(`/${name}?updateMask=content`),
+      url: this.url(`/${name}?updateMask=content,visibility`),
       method: "PATCH",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content,
+        visibility: normalizeMemoVisibility(visibility),
+      }),
     });
   }
 
@@ -650,11 +667,12 @@ class MemosCardView extends ItemView {
       title: "New memo",
       buttonText: "Create",
       initialContent: "",
+      initialVisibility: this.plugin.settings.memoVisibility,
       existingAttachments: [],
       owner: this,
-      onSubmit: async ({ content, files }) => {
+      onSubmit: async ({ content, files, visibility }) => {
         const attachments = await this.uploadAttachments(files);
-        const created = await this.plugin.api.createMemo(content, attachments);
+        const created = await this.plugin.api.createMemo(content, attachments, visibility);
         this.memos = [created, ...this.memos];
         this.renderCards();
         this.setStatus("");
@@ -665,8 +683,9 @@ class MemosCardView extends ItemView {
 
   openWebClipModal(): void {
     new WebClipModal(this.app, {
-      onClip: async (url, setStatus) => {
-        const created = await this.clipWebPage(url, setStatus);
+      initialVisibility: this.plugin.settings.memoVisibility,
+      onClip: async (url, visibility, setStatus) => {
+        const created = await this.clipWebPage(url, visibility, setStatus);
         this.memos = [created, ...this.memos];
         this.renderCards();
         this.setStatus("");
@@ -680,11 +699,12 @@ class MemosCardView extends ItemView {
       title: "Edit memo",
       buttonText: "Save",
       initialContent: memo.content ?? "",
+      initialVisibility: normalizeMemoVisibility(memo.visibility),
       existingAttachments: memo.attachments ?? [],
       owner: this,
-      onSubmit: async ({ content, files }) => {
+      onSubmit: async ({ content, files, visibility }) => {
         const newAttachments = await this.uploadAttachments(files);
-        const updated = await this.plugin.api.updateMemoContent(memo.name, content);
+        const updated = await this.plugin.api.updateMemoContent(memo.name, content, visibility);
         if (newAttachments.length) {
           const attachments = [...(memo.attachments ?? []), ...newAttachments];
           await this.plugin.api.setMemoAttachments(updated.name, attachments);
@@ -711,6 +731,7 @@ class MemosCardView extends ItemView {
 
   private async clipWebPage(
     inputUrl: string,
+    visibility: MemosVisibility,
     setStatus: (message: string) => void,
   ): Promise<MemosMemo> {
     setStatus("Fetching web page...");
@@ -738,7 +759,7 @@ class MemosCardView extends ItemView {
     }
 
     setStatus("Saving memo...");
-    return this.plugin.api.createMemo(content, attachments);
+    return this.plugin.api.createMemo(content, attachments, visibility);
   }
 
   private openDeleteModal(memo: MemosMemo): void {
@@ -791,7 +812,12 @@ class WebClipModal extends Modal {
   constructor(
     app: App,
     private readonly options: {
-      onClip: (url: string, setStatus: (message: string) => void) => Promise<void>;
+      initialVisibility: MemosVisibility;
+      onClip: (
+        url: string,
+        visibility: MemosVisibility,
+        setStatus: (message: string) => void,
+      ) => Promise<void>;
     },
   ) {
     super(app);
@@ -809,6 +835,17 @@ class WebClipModal extends Modal {
         placeholder: "https://example.com/article",
       },
     });
+
+    const publishRow = this.contentEl.createDiv({ cls: "memos-publish-row" });
+    publishRow.createEl("label", {
+      attr: { for: "memos-web-clip-visibility" },
+      text: "Visibility",
+    });
+    const visibilitySelect = createVisibilitySelect(
+      publishRow,
+      this.options.initialVisibility,
+      "memos-web-clip-visibility",
+    );
 
     const statusEl = this.contentEl.createDiv({ cls: "memos-clip-status" });
     const setStatus = (message: string) => {
@@ -840,7 +877,7 @@ class WebClipModal extends Modal {
       submitButton.disabled = true;
       cancelButton.disabled = true;
       try {
-        await this.options.onClip(url, setStatus);
+        await this.options.onClip(url, normalizeMemoVisibility(visibilitySelect.value), setStatus);
         this.close();
       } catch (error) {
         setStatus(getErrorMessage(error));
@@ -871,6 +908,7 @@ class MemoEditorModal extends Modal {
       title: string;
       buttonText: string;
       initialContent: string;
+      initialVisibility: MemosVisibility;
       existingAttachments: MemosAttachment[];
       owner: Component;
       onSubmit: (payload: MemoEditorSubmit) => Promise<void>;
@@ -914,6 +952,17 @@ class MemoEditorModal extends Modal {
     };
     renderPreview();
     textarea.oninput = renderPreview;
+
+    const publishRow = this.contentEl.createDiv({ cls: "memos-publish-row" });
+    publishRow.createEl("label", {
+      attr: { for: "memos-editor-visibility" },
+      text: "Visibility",
+    });
+    const visibilitySelect = createVisibilitySelect(
+      publishRow,
+      this.options.initialVisibility,
+      "memos-editor-visibility",
+    );
 
     const attachmentSection = this.contentEl.createDiv({ cls: "memos-editor-attachments" });
     const attachmentHeader = attachmentSection.createDiv({ cls: "memos-editor-attachment-header" });
@@ -1009,6 +1058,7 @@ class MemoEditorModal extends Modal {
         await this.options.onSubmit({
           content,
           files: selectedFiles,
+          visibility: normalizeMemoVisibility(visibilitySelect.value),
         });
         this.close();
       } catch (error) {
@@ -1132,6 +1182,20 @@ class MemosSettingTab extends PluginSettingTab {
             this.plugin.settings.pageSize = value;
             await this.plugin.saveSettings();
             this.plugin.refreshOpenViews();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Default publish visibility")
+      .setDesc("Visibility used for new memos and web clips unless changed before publishing.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("PRIVATE", "Private")
+          .addOption("PUBLIC", "Public")
+          .setValue(normalizeMemoVisibility(this.plugin.settings.memoVisibility))
+          .onChange(async (value) => {
+            this.plugin.settings.memoVisibility = normalizeMemoVisibility(value);
+            await this.plugin.saveSettings();
           });
       });
 
@@ -2054,6 +2118,25 @@ function formatFileSize(size: number): string {
   }
 
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function normalizeMemoVisibility(value: unknown): MemosVisibility {
+  return value === "PUBLIC" ? "PUBLIC" : "PRIVATE";
+}
+
+function createVisibilitySelect(
+  parent: HTMLElement,
+  value: MemosVisibility,
+  id: string,
+): HTMLSelectElement {
+  const select = parent.createEl("select", {
+    cls: "memos-visibility-select",
+    attr: { id },
+  });
+  select.createEl("option", { attr: { value: "PRIVATE" }, text: "Private" });
+  select.createEl("option", { attr: { value: "PUBLIC" }, text: "Public" });
+  select.value = normalizeMemoVisibility(value);
+  return select;
 }
 
 function getSelectedTextWithin(container: HTMLElement): string {
