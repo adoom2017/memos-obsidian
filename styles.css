@@ -159,10 +159,85 @@
   padding-top: 12px;
 }
 
+.memos-editor-shell {
+  border: 1px solid var(--memos-border);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 260px;
+  overflow: hidden;
+}
+
 .memos-editor {
-  min-height: 220px;
+  border: 0;
+  border-right: 1px solid var(--memos-border);
+  min-height: 260px;
   resize: vertical;
   width: 100%;
+}
+
+.memos-editor-preview {
+  background: var(--background-primary);
+  min-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+}
+
+.memos-editor-preview > :first-child {
+  margin-top: 0;
+}
+
+.memos-editor-preview-empty {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.memos-editor-attachments {
+  border: 1px solid var(--memos-border);
+  border-radius: 8px;
+  margin-top: 12px;
+  padding: 10px;
+}
+
+.memos-editor-attachment-header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.memos-file-input {
+  display: none;
+}
+
+.memos-editor-attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.memos-editor-attachment-chip {
+  align-items: center;
+  background: var(--background-secondary);
+  border: 1px solid var(--memos-border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 0.78rem;
+  gap: 4px;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 3px 8px;
+}
+
+.memos-attachment-remove {
+  align-items: center;
+  display: inline-flex;
+  height: 20px;
+  justify-content: center;
+  padding: 0;
+  width: 20px;
 }
 
 .memos-modal-actions {
@@ -184,5 +259,14 @@
   .memos-toolbar-actions,
   .memos-card-actions {
     justify-content: flex-start;
+  }
+
+  .memos-editor-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .memos-editor {
+    border-bottom: 1px solid var(--memos-border);
+    border-right: 0;
   }
 }

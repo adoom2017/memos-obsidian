@@ -7,6 +7,8 @@ Obsidian plugin that connects to a Memos instance and shows memos as editable ca
 * Configure Memos base URL, PAT, and page size in Obsidian settings.
 * Open a dedicated card view from the ribbon or command palette.
 * Refresh, page through, create, edit, and delete memos.
+* Create and edit memos with live Markdown preview.
+* Upload files as Memos attachments when creating or editing memos.
 * Render memo Markdown content and show tags, visibility, pinned state, timestamps, and attachment links.
 
 ## Install Locally

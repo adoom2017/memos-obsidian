@@ -1,5 +1,6 @@
 import {
   App,
+  Component,
   ItemView,
   MarkdownRenderer,
   Modal,
@@ -28,6 +29,11 @@ interface MemosAttachment {
   externalLink?: string;
   type?: string;
   size?: string | number;
+}
+
+interface MemoEditorSubmit {
+  content: string;
+  files: File[];
 }
 
 interface MemosMemo {
@@ -154,13 +160,14 @@ class MemosApiClient {
     });
   }
 
-  async createMemo(content: string): Promise<MemosMemo> {
+  async createMemo(content: string, attachments: MemosAttachment[] = []): Promise<MemosMemo> {
     return this.request<MemosMemo>({
       url: this.url("/memos"),
       method: "POST",
       body: JSON.stringify({
         content,
         visibility: "PRIVATE",
+        attachments,
       }),
     });
   }
@@ -177,6 +184,29 @@ class MemosApiClient {
     await this.request<Record<string, never>>({
       url: this.url(`/${name}`),
       method: "DELETE",
+    });
+  }
+
+  async createAttachment(file: File): Promise<MemosAttachment> {
+    return this.request<MemosAttachment>({
+      url: this.url("/attachments"),
+      method: "POST",
+      body: JSON.stringify({
+        filename: file.name,
+        type: file.type || "application/octet-stream",
+        content: await fileToBase64(file),
+      }),
+    });
+  }
+
+  async setMemoAttachments(name: string, attachments: MemosAttachment[]): Promise<void> {
+    await this.request<Record<string, never>>({
+      url: this.url(`/${name}/attachments`),
+      method: "PATCH",
+      body: JSON.stringify({
+        name,
+        attachments,
+      }),
     });
   }
 
@@ -407,8 +437,11 @@ class MemosCardView extends ItemView {
       title: "New memo",
       buttonText: "Create",
       initialContent: "",
-      onSubmit: async (content) => {
-        const created = await this.plugin.api.createMemo(content);
+      existingAttachments: [],
+      owner: this,
+      onSubmit: async ({ content, files }) => {
+        const attachments = await this.uploadAttachments(files);
+        const created = await this.plugin.api.createMemo(content, attachments);
         this.memos = [created, ...this.memos];
         this.renderCards();
         this.setStatus("");
@@ -422,8 +455,16 @@ class MemosCardView extends ItemView {
       title: "Edit memo",
       buttonText: "Save",
       initialContent: memo.content ?? "",
-      onSubmit: async (content) => {
+      existingAttachments: memo.attachments ?? [],
+      owner: this,
+      onSubmit: async ({ content, files }) => {
+        const newAttachments = await this.uploadAttachments(files);
         const updated = await this.plugin.api.updateMemoContent(memo.name, content);
+        if (newAttachments.length) {
+          const attachments = [...(memo.attachments ?? []), ...newAttachments];
+          await this.plugin.api.setMemoAttachments(updated.name, attachments);
+          updated.attachments = attachments;
+        }
         this.memos = this.memos.map((item) =>
           item.name === updated.name ? updated : item,
         );
@@ -431,6 +472,16 @@ class MemosCardView extends ItemView {
         new Notice("Memo updated.");
       },
     }).open();
+  }
+
+  private async uploadAttachments(files: File[]): Promise<MemosAttachment[]> {
+    const attachments: MemosAttachment[] = [];
+
+    for (const file of files) {
+      attachments.push(await this.plugin.api.createAttachment(file));
+    }
+
+    return attachments;
   }
 
   private openDeleteModal(memo: MemosMemo): void {
@@ -486,7 +537,9 @@ class MemoEditorModal extends Modal {
       title: string;
       buttonText: string;
       initialContent: string;
-      onSubmit: (content: string) => Promise<void>;
+      existingAttachments: MemosAttachment[];
+      owner: Component;
+      onSubmit: (payload: MemoEditorSubmit) => Promise<void>;
     },
   ) {
     super(app);
@@ -497,6 +550,9 @@ class MemoEditorModal extends Modal {
     this.contentEl.addClass("memos-modal");
     this.titleEl.setText(this.options.title);
 
+    let selectedFiles: File[] = [];
+
+    const editorShell = this.contentEl.createDiv({ cls: "memos-editor-shell" });
     const textarea = this.contentEl.createEl("textarea", {
       cls: "memos-editor",
       attr: {
@@ -505,6 +561,91 @@ class MemoEditorModal extends Modal {
       },
     });
     textarea.value = this.options.initialContent;
+    editorShell.appendChild(textarea);
+
+    const preview = editorShell.createDiv({ cls: "memos-editor-preview" });
+    const renderPreview = () => {
+      preview.empty();
+      const content = textarea.value.trim();
+
+      if (!content) {
+        preview.createEl("span", {
+          cls: "memos-editor-preview-empty",
+          text: "Preview",
+        });
+        return;
+      }
+
+      void MarkdownRenderer.render(this.app, content, preview, "", this.options.owner);
+    };
+    renderPreview();
+    textarea.oninput = renderPreview;
+
+    const attachmentSection = this.contentEl.createDiv({ cls: "memos-editor-attachments" });
+    const attachmentHeader = attachmentSection.createDiv({ cls: "memos-editor-attachment-header" });
+    attachmentHeader.createEl("span", { text: "Attachments" });
+
+    const fileInput = attachmentHeader.createEl("input", {
+      cls: "memos-file-input",
+      attr: {
+        type: "file",
+        multiple: "true",
+      },
+    });
+
+    const addFileButton = attachmentHeader.createEl("button", {
+      cls: "memos-button",
+      attr: { type: "button" },
+    });
+    setIcon(addFileButton, "paperclip");
+    addFileButton.createSpan({ text: "Add files" });
+    addFileButton.onclick = () => {
+      fileInput.click();
+    };
+
+    const attachmentList = attachmentSection.createDiv({ cls: "memos-editor-attachment-list" });
+    const renderSelectedFiles = () => {
+      attachmentList.empty();
+
+      for (const attachment of this.options.existingAttachments) {
+        attachmentList.createEl("span", {
+          cls: "memos-editor-attachment-chip",
+          text: attachment.filename ?? attachment.name,
+        });
+      }
+
+      for (const [index, file] of selectedFiles.entries()) {
+        const chip = attachmentList.createDiv({ cls: "memos-editor-attachment-chip" });
+        chip.createSpan({ text: `${file.name} (${formatFileSize(file.size)})` });
+        const removeButton = chip.createEl("button", {
+          cls: "memos-attachment-remove",
+          attr: {
+            type: "button",
+            "aria-label": `Remove ${file.name}`,
+            title: `Remove ${file.name}`,
+          },
+        });
+        setIcon(removeButton, "x");
+        removeButton.onclick = () => {
+          selectedFiles = selectedFiles.filter((_, fileIndex) => fileIndex !== index);
+          renderSelectedFiles();
+        };
+      }
+
+      if (!this.options.existingAttachments.length && !selectedFiles.length) {
+        attachmentList.createEl("span", {
+          cls: "memos-editor-preview-empty",
+          text: "No attachments",
+        });
+      }
+    };
+
+    fileInput.onchange = () => {
+      selectedFiles = [...selectedFiles, ...Array.from(fileInput.files ?? [])];
+      fileInput.value = "";
+      renderSelectedFiles();
+    };
+    renderSelectedFiles();
 
     const actions = this.contentEl.createDiv({ cls: "memos-modal-actions" });
     const cancelButton = actions.createEl("button", {
@@ -523,19 +664,24 @@ class MemoEditorModal extends Modal {
 
     const submit = async () => {
       const content = textarea.value.trim();
-      if (!content) {
-        new Notice("Memo content is required.");
+      if (!content && !selectedFiles.length && !this.options.existingAttachments.length) {
+        new Notice("Memo content or attachment is required.");
         return;
       }
 
       submitButton.disabled = true;
+      addFileButton.disabled = true;
       try {
-        await this.options.onSubmit(content);
+        await this.options.onSubmit({
+          content,
+          files: selectedFiles,
+        });
         this.close();
       } catch (error) {
         new Notice(getErrorMessage(error));
       } finally {
         submitButton.disabled = false;
+        addFileButton.disabled = false;
       }
     };
 
@@ -671,6 +817,31 @@ function formatDate(value?: string): string {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const chunkSize = 8192;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
+}
+
+function formatFileSize(size: number): string {
+  if (size < 1024) {
+    return `${size} B`;
+  }
+
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function getErrorMessage(error: unknown): string {
