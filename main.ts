@@ -14,6 +14,7 @@ import {
 } from "obsidian";
 
 const MEMOS_VIEW_TYPE = "memos-card-view";
+type MemosViewLocation = "main" | "right";
 
 interface MemosPluginSettings {
   baseUrl: string;
@@ -68,14 +69,22 @@ export default class MemosCardPlugin extends Plugin {
     );
 
     this.addRibbonIcon("sticky-note", "Open Memos", () => {
-      void this.activateView();
+      void this.activateView("main");
     });
 
     this.addCommand({
       id: "open-memos-card-view",
-      name: "Open Memos card view",
+      name: "Open Memos card view in main area",
       callback: () => {
-        void this.activateView();
+        void this.activateView("main");
+      },
+    });
+
+    this.addCommand({
+      id: "open-memos-card-view-sidebar",
+      name: "Open Memos card view in right sidebar",
+      callback: () => {
+        void this.activateView("right");
       },
     });
 
@@ -94,9 +103,11 @@ export default class MemosCardPlugin extends Plugin {
     this.app.workspace.detachLeavesOfType(MEMOS_VIEW_TYPE);
   }
 
-  async activateView(): Promise<void> {
-    const existingLeaf = this.app.workspace.getLeavesOfType(MEMOS_VIEW_TYPE)[0];
-    const leaf = existingLeaf ?? this.app.workspace.getRightLeaf(false);
+  async activateView(location: MemosViewLocation = "main"): Promise<void> {
+    this.app.workspace.detachLeavesOfType(MEMOS_VIEW_TYPE);
+    const leaf = location === "right"
+      ? this.app.workspace.getRightLeaf(false)
+      : this.app.workspace.getLeaf("tab");
 
     if (!leaf) {
       new Notice("Unable to open Memos view.");
