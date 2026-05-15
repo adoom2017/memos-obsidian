@@ -21,6 +21,9 @@ interface MemosPluginSettings {
   baseUrl: string;
   token: string;
   pageSize: number;
+  llmBaseUrl: string;
+  llmModel: string;
+  llmApiKey: string;
 }
 
 interface MemosAttachment {
@@ -55,10 +58,35 @@ interface ListMemosResponse {
   nextPageToken?: string;
 }
 
+interface WebClipPage {
+  url: string;
+  title: string;
+  description: string;
+  text: string;
+  imageUrl: string;
+}
+
+interface DownloadedImage {
+  filename: string;
+  type: string;
+  content: ArrayBuffer;
+}
+
+interface OpenAiChatResponse {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+}
+
 const DEFAULT_SETTINGS: MemosPluginSettings = {
   baseUrl: "https://memos.adoom-cloud.top:1443",
   token: "",
   pageSize: 20,
+  llmBaseUrl: "http://127.0.0.1:8080/v1",
+  llmModel: "",
+  llmApiKey: "",
 };
 
 export default class MemosCardPlugin extends Plugin {
@@ -99,6 +127,21 @@ export default class MemosCardPlugin extends Plugin {
       name: "Refresh Memos card view",
       callback: () => {
         this.refreshOpenViews();
+      },
+    });
+
+    this.addCommand({
+      id: "clip-web-page-to-memos",
+      name: "Clip web page to Memos",
+      callback: () => {
+        void this.activateView("main").then(() => {
+          for (const leaf of this.app.workspace.getLeavesOfType(MEMOS_VIEW_TYPE)) {
+            if (leaf.view instanceof MemosCardView) {
+              leaf.view.openWebClipModal();
+              break;
+            }
+          }
+        });
       },
     });
 
@@ -188,13 +231,25 @@ class MemosApiClient {
   }
 
   async createAttachment(file: File): Promise<MemosAttachment> {
+    return this.createAttachmentFromArrayBuffer(
+      file.name,
+      file.type || "application/octet-stream",
+      await file.arrayBuffer(),
+    );
+  }
+
+  async createAttachmentFromArrayBuffer(
+    filename: string,
+    type: string,
+    content: ArrayBuffer,
+  ): Promise<MemosAttachment> {
     return this.request<MemosAttachment>({
       url: this.url("/attachments"),
       method: "POST",
       body: JSON.stringify({
-        filename: file.name,
-        type: file.type || "application/octet-stream",
-        content: await fileToBase64(file),
+        filename,
+        type,
+        content: arrayBufferToBase64(content),
       }),
     });
   }
@@ -295,6 +350,9 @@ class MemosCardView extends ItemView {
     this.createActionButton(actions, "plus", "New memo", () => {
       this.openCreateModal();
     }, "New");
+    this.createActionButton(actions, "scissors", "Clip web page", () => {
+      this.openWebClipModal();
+    }, "Clip");
     this.createActionButton(actions, "refresh-cw", "Refresh", () => {
       void this.loadMemos(true);
     });
@@ -450,6 +508,18 @@ class MemosCardView extends ItemView {
     }).open();
   }
 
+  openWebClipModal(): void {
+    new WebClipModal(this.app, {
+      onClip: async (url, setStatus) => {
+        const created = await this.clipWebPage(url, setStatus);
+        this.memos = [created, ...this.memos];
+        this.renderCards();
+        this.setStatus("");
+        new Notice("Web page clipped to Memos.");
+      },
+    }).open();
+  }
+
   private openEditModal(memo: MemosMemo): void {
     new MemoEditorModal(this.app, {
       title: "Edit memo",
@@ -482,6 +552,38 @@ class MemosCardView extends ItemView {
     }
 
     return attachments;
+  }
+
+  private async clipWebPage(
+    inputUrl: string,
+    setStatus: (message: string) => void,
+  ): Promise<MemosMemo> {
+    setStatus("Fetching web page...");
+    const page = await fetchWebClipPage(inputUrl);
+
+    setStatus("Generating summary...");
+    const summary = await summarizeWebClipPage(page, this.plugin.settings);
+    const content = buildWebClipMemoContent(page, summary);
+    const attachments: MemosAttachment[] = [];
+
+    if (page.imageUrl) {
+      try {
+        setStatus("Saving hero image...");
+        const image = await downloadWebClipImage(page.imageUrl, page.url);
+        attachments.push(
+          await this.plugin.api.createAttachmentFromArrayBuffer(
+            image.filename,
+            image.type,
+            image.content,
+          ),
+        );
+      } catch (error) {
+        new Notice(`Hero image failed: ${getErrorMessage(error)}`);
+      }
+    }
+
+    setStatus("Saving memo...");
+    return this.plugin.api.createMemo(content, attachments);
   }
 
   private openDeleteModal(memo: MemosMemo): void {
@@ -527,6 +629,83 @@ class MemosCardView extends ItemView {
 
     button.onclick = onClick;
     return button;
+  }
+}
+
+class WebClipModal extends Modal {
+  constructor(
+    app: App,
+    private readonly options: {
+      onClip: (url: string, setStatus: (message: string) => void) => Promise<void>;
+    },
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.contentEl.empty();
+    this.contentEl.addClass("memos-modal");
+    this.titleEl.setText("Clip web page");
+
+    const input = this.contentEl.createEl("input", {
+      cls: "memos-url-input",
+      attr: {
+        type: "url",
+        placeholder: "https://example.com/article",
+      },
+    });
+
+    const statusEl = this.contentEl.createDiv({ cls: "memos-clip-status" });
+    const setStatus = (message: string) => {
+      statusEl.setText(message);
+    };
+
+    const actions = this.contentEl.createDiv({ cls: "memos-modal-actions" });
+    const cancelButton = actions.createEl("button", {
+      text: "Cancel",
+      attr: { type: "button" },
+    });
+    cancelButton.onclick = () => {
+      this.close();
+    };
+
+    const submitButton = actions.createEl("button", {
+      cls: "mod-cta",
+      text: "Clip",
+      attr: { type: "button" },
+    });
+
+    const submit = async () => {
+      const url = input.value.trim();
+      if (!url) {
+        new Notice("Web page URL is required.");
+        return;
+      }
+
+      submitButton.disabled = true;
+      cancelButton.disabled = true;
+      try {
+        await this.options.onClip(url, setStatus);
+        this.close();
+      } catch (error) {
+        setStatus(getErrorMessage(error));
+        new Notice(getErrorMessage(error));
+      } finally {
+        submitButton.disabled = false;
+        cancelButton.disabled = false;
+      }
+    };
+
+    submitButton.onclick = () => {
+      void submit();
+    };
+    input.onkeydown = (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void submit();
+      }
+    };
+    input.focus();
   }
 }
 
@@ -800,7 +979,343 @@ class MemosSettingTab extends PluginSettingTab {
             this.plugin.refreshOpenViews();
           });
       });
+
+    new Setting(containerEl)
+      .setName("Local LLM base URL")
+      .setDesc("OpenAI-compatible endpoint base URL used for web clipping.")
+      .addText((text) => {
+        text
+          .setPlaceholder("http://127.0.0.1:8080/v1")
+          .setValue(this.plugin.settings.llmBaseUrl)
+          .onChange(async (value) => {
+            this.plugin.settings.llmBaseUrl = value.trim().replace(/\/+$/, "");
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Local LLM model")
+      .setDesc("Model name sent to the OpenAI-compatible chat completions API.")
+      .addText((text) => {
+        text
+          .setPlaceholder("qwen-local")
+          .setValue(this.plugin.settings.llmModel)
+          .onChange(async (value) => {
+            this.plugin.settings.llmModel = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Local LLM API key")
+      .setDesc("Optional. Leave empty when the local model server does not require a key.")
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text
+          .setPlaceholder("Optional")
+          .setValue(this.plugin.settings.llmApiKey)
+          .onChange(async (value) => {
+            this.plugin.settings.llmApiKey = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
   }
+}
+
+async function fetchWebClipPage(inputUrl: string): Promise<WebClipPage> {
+  const url = normalizeWebUrl(inputUrl);
+  const response = await requestUrl({
+    url,
+    method: "GET",
+    throw: false,
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Web page request failed (${response.status}).`);
+  }
+
+  const doc = new DOMParser().parseFromString(response.text, "text/html");
+  const title = normalizeWhitespace(
+    getMetaContent(doc, "meta[property='og:title']")
+      || getMetaContent(doc, "meta[name='twitter:title']")
+      || doc.title
+      || url,
+  );
+  const description = normalizeWhitespace(
+    getMetaContent(doc, "meta[name='description']")
+      || getMetaContent(doc, "meta[property='og:description']")
+      || getMetaContent(doc, "meta[name='twitter:description']"),
+  );
+  const imageUrl = findHeroImageUrl(doc, url);
+  const text = extractReadableText(doc, description);
+
+  if (!text && !description) {
+    throw new Error("No readable page content found.");
+  }
+
+  return {
+    url: findCanonicalUrl(doc, url),
+    title,
+    description,
+    text,
+    imageUrl,
+  };
+}
+
+async function summarizeWebClipPage(
+  page: WebClipPage,
+  settings: MemosPluginSettings,
+): Promise<string> {
+  const baseUrl = settings.llmBaseUrl.trim().replace(/\/+$/, "");
+  const model = settings.llmModel.trim();
+
+  if (!baseUrl) {
+    throw new Error("Local LLM base URL is not configured.");
+  }
+
+  if (!model) {
+    throw new Error("Local LLM model is not configured.");
+  }
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (settings.llmApiKey.trim()) {
+    headers.Authorization = `Bearer ${settings.llmApiKey.trim()}`;
+  }
+
+  const response = await requestUrl({
+    url: `${baseUrl}/chat/completions`,
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      messages: [
+        {
+          role: "system",
+          content: "你是一个网页剪藏助手。只根据用户提供的网页内容生成中文摘要，不要编造原文没有的信息。",
+        },
+        {
+          role: "user",
+          content: [
+            `标题：${page.title}`,
+            page.description ? `网页描述：${page.description}` : "",
+            `原文链接：${page.url}`,
+            "",
+            "请用 3-5 句话总结下面网页的核心内容，保留关键信息和结论：",
+            truncateText(page.text, 12000),
+          ].filter(Boolean).join("\n"),
+        },
+      ],
+    }),
+    throw: false,
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    const body = response.text ? `: ${response.text.slice(0, 200)}` : "";
+    throw new Error(`Local LLM request failed (${response.status})${body}`);
+  }
+
+  const data = response.json as OpenAiChatResponse;
+  const summary = data.choices?.[0]?.message?.content?.trim() ?? "";
+  if (summary) {
+    return summary;
+  }
+
+  if (page.description) {
+    return page.description;
+  }
+
+  throw new Error("Local LLM returned an empty summary.");
+}
+
+async function downloadWebClipImage(imageUrl: string, pageUrl: string): Promise<DownloadedImage> {
+  const url = resolveHttpUrl(imageUrl, pageUrl);
+  const response = await requestUrl({
+    url,
+    method: "GET",
+    throw: false,
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Image request failed (${response.status}).`);
+  }
+
+  const type = getResponseHeader(response.headers, "content-type")?.split(";")[0]?.trim()
+    || guessImageType(url)
+    || "application/octet-stream";
+
+  if (!type.startsWith("image/")) {
+    throw new Error(`Hero image is not an image (${type}).`);
+  }
+
+  return {
+    filename: filenameFromUrl(url, type),
+    type,
+    content: response.arrayBuffer,
+  };
+}
+
+function buildWebClipMemoContent(page: WebClipPage, summary: string): string {
+  return [
+    `## ${page.title || "Web clip"}`,
+    "",
+    summary.trim(),
+    "",
+    `原文：<${page.url}>`,
+  ].join("\n");
+}
+
+function normalizeWebUrl(inputUrl: string): string {
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(inputUrl)
+    ? inputUrl
+    : `https://${inputUrl}`;
+  const url = new URL(withProtocol);
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Only http and https URLs are supported.");
+  }
+
+  return url.toString();
+}
+
+function findCanonicalUrl(doc: Document, fallbackUrl: string): string {
+  const canonical = doc.querySelector("link[rel='canonical']")?.getAttribute("href")?.trim();
+  if (!canonical) {
+    return fallbackUrl;
+  }
+
+  try {
+    return resolveHttpUrl(canonical, fallbackUrl);
+  } catch {
+    return fallbackUrl;
+  }
+}
+
+function getMetaContent(doc: Document, selector: string): string {
+  return doc.querySelector(selector)?.getAttribute("content")?.trim() ?? "";
+}
+
+function findHeroImageUrl(doc: Document, pageUrl: string): string {
+  const metaImage = getMetaContent(doc, "meta[property='og:image']")
+    || getMetaContent(doc, "meta[name='twitter:image']");
+
+  if (metaImage) {
+    try {
+      return resolveHttpUrl(metaImage, pageUrl);
+    } catch {
+      // Continue to regular image candidates.
+    }
+  }
+
+  for (const image of Array.from(doc.querySelectorAll("img[src]"))) {
+    const src = image.getAttribute("src")?.trim();
+    if (!src || src.startsWith("data:") || src.startsWith("blob:")) {
+      continue;
+    }
+
+    try {
+      return resolveHttpUrl(src, pageUrl);
+    } catch {
+      continue;
+    }
+  }
+
+  return "";
+}
+
+function extractReadableText(doc: Document, description: string): string {
+  for (const element of Array.from(doc.querySelectorAll(
+    "script, style, noscript, nav, header, footer, aside, form, button, svg, canvas, iframe",
+  ))) {
+    element.remove();
+  }
+
+  const root = doc.querySelector("article")
+    || doc.querySelector("main")
+    || doc.querySelector("[role='main']")
+    || doc.querySelector(".post")
+    || doc.querySelector(".article")
+    || doc.querySelector(".content")
+    || doc.body;
+  const text = normalizeWhitespace(root?.textContent ?? "");
+  return truncateText([description, text].filter(Boolean).join("\n\n"), 20000);
+}
+
+function resolveHttpUrl(inputUrl: string, baseUrl: string): string {
+  const url = new URL(inputUrl, baseUrl);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Only http and https URLs are supported.");
+  }
+
+  return url.toString();
+}
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength)}\n\n[Content truncated]`;
+}
+
+function filenameFromUrl(url: string, type: string): string {
+  const pathname = new URL(url).pathname;
+  const rawName = safeDecodeURIComponent(pathname.split("/").filter(Boolean).pop() ?? "");
+  const extension = extensionFromType(type);
+
+  if (!rawName) {
+    return `web-clip-hero${extension}`;
+  }
+
+  if (/\.[a-z0-9]{2,5}$/i.test(rawName)) {
+    return rawName;
+  }
+
+  return `${rawName}${extension}`;
+}
+
+function getResponseHeader(headers: Record<string, string>, name: string): string {
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === target) {
+      return value;
+    }
+  }
+
+  return "";
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function guessImageType(url: string): string {
+  const pathname = new URL(url).pathname.toLowerCase();
+  if (pathname.endsWith(".png")) return "image/png";
+  if (pathname.endsWith(".jpg") || pathname.endsWith(".jpeg")) return "image/jpeg";
+  if (pathname.endsWith(".gif")) return "image/gif";
+  if (pathname.endsWith(".webp")) return "image/webp";
+  if (pathname.endsWith(".avif")) return "image/avif";
+  return "";
+}
+
+function extensionFromType(type: string): string {
+  if (type === "image/png") return ".png";
+  if (type === "image/jpeg") return ".jpg";
+  if (type === "image/gif") return ".gif";
+  if (type === "image/webp") return ".webp";
+  if (type === "image/avif") return ".avif";
+  return "";
 }
 
 function formatDate(value?: string): string {
@@ -819,8 +1334,8 @@ function formatDate(value?: string): string {
   }).format(date);
 }
 
-async function fileToBase64(file: File): Promise<string> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
+function arrayBufferToBase64(content: ArrayBuffer): string {
+  const bytes = new Uint8Array(content);
   let binary = "";
   const chunkSize = 8192;
 

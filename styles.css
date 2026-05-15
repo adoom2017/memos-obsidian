@@ -240,6 +240,17 @@
   width: 20px;
 }
 
+.memos-url-input {
+  width: 100%;
+}
+
+.memos-clip-status {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  min-height: 24px;
+  padding-top: 8px;
+}
+
 .memos-modal-actions {
   justify-content: flex-end;
   margin-top: 14px;
