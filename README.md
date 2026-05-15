@@ -10,6 +10,7 @@ Obsidian plugin that connects to a Memos instance and shows memos as editable ca
 * Create and edit memos with live Markdown preview.
 * Upload files as Memos attachments when creating or editing memos.
 * Clip web pages by URL, using Obsidian desktop's embedded browser when available, summarize them with a local OpenAI-compatible LLM, and save the summary plus source link to Memos.
+* Clip the current browser page with the companion Chromium extension, sending extracted page text and visible images directly to Obsidian.
 * Render memo Markdown content and show tags, visibility, pinned state, timestamps, and attachment links.
 
 ## Install Locally
@@ -25,6 +26,16 @@ Obsidian plugin that connects to a Memos instance and shows memos as editable ca
 9. Optionally set `System Chrome path` when the plugin cannot auto-detect Chrome for protected pages.
 
 The default server URL is `https://memos.adoom-cloud.top:1443`, but it can be changed in settings.
+
+## Browser Extension
+
+1. In Obsidian plugin settings, enable `Browser clip bridge`.
+2. Copy the `Browser clip bridge token`.
+3. Open Chrome or Edge extension management, enable developer mode, and load `browser-extension/` as an unpacked extension.
+4. Open the extension options, confirm the bridge URL is `http://127.0.0.1:27124`, paste the token, and save.
+5. On any page, click the extension and choose `Clip current page`.
+
+The extension sends extracted title, URL, readable text, description, and visible page images to Obsidian. Obsidian still performs the local LLM summary, optional hero-image selection from those candidates, and Memos creation.
 
 ## Development
 

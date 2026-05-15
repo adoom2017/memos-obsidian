@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Memos Obsidian Clipper",
+  "version": "0.1.0",
+  "description": "Send the current page to the Memos Card View Obsidian plugin.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "action": {
+    "default_title": "Clip to Memos",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html"
+}

@@ -16,7 +16,9 @@ import {
   setIcon,
 } from "obsidian";
 import { spawn } from "child_process";
+import { randomBytes } from "crypto";
 import { existsSync } from "fs";
+import { createServer, IncomingMessage, ServerResponse, type Server } from "http";
 import { homedir, tmpdir } from "os";
 import { join } from "path";
 
@@ -91,6 +93,9 @@ interface MemosPluginSettings {
   token: string;
   pageSize: number;
   memoVisibility: MemosVisibility;
+  browserClipBridgeEnabled: boolean;
+  browserClipBridgePort: number;
+  browserClipBridgeToken: string;
   llmBaseUrl: string;
   llmModel: string;
   llmApiKey: string;
@@ -158,11 +163,26 @@ interface WebClipSummary {
   imageUrl: string;
 }
 
+interface BrowserClipRequest {
+  token?: string;
+  visibility?: string;
+  page?: Partial<WebClipPage>;
+}
+
+interface BrowserClipResponse {
+  ok: boolean;
+  memoName?: string;
+  error?: string;
+}
+
 const DEFAULT_SETTINGS: MemosPluginSettings = {
   baseUrl: "https://memos.adoom-cloud.top:1443",
   token: "",
   pageSize: 20,
   memoVisibility: "PRIVATE",
+  browserClipBridgeEnabled: false,
+  browserClipBridgePort: 27124,
+  browserClipBridgeToken: "",
   llmBaseUrl: "http://127.0.0.1:8080/v1",
   llmModel: "",
   llmApiKey: "",
@@ -175,14 +195,17 @@ const WEB_CLIP_BROWSER_READINESS_TIMEOUT_MS = 8000;
 const WEB_CLIP_CHROME_READINESS_TIMEOUT_MS = 25000;
 const WEB_CLIP_CHROME_READINESS_POLL_MS = 750;
 const WEB_CLIP_BROWSER_READINESS_POLL_MS = 350;
+const BROWSER_CLIP_MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 export default class MemosCardPlugin extends Plugin {
   settings: MemosPluginSettings;
   api: MemosApiClient;
+  private browserClipBridge: BrowserClipBridge;
 
   async onload(): Promise<void> {
     await this.loadSettings();
     this.api = new MemosApiClient(() => this.settings);
+    this.browserClipBridge = new BrowserClipBridge(this);
 
     this.registerView(
       MEMOS_VIEW_TYPE,
@@ -233,9 +256,11 @@ export default class MemosCardPlugin extends Plugin {
     });
 
     this.addSettingTab(new MemosSettingTab(this.app, this));
+    await this.restartBrowserClipBridge();
   }
 
   onunload(): void {
+    void this.browserClipBridge?.stop();
     this.app.workspace.detachLeavesOfType(MEMOS_VIEW_TYPE);
   }
 
@@ -255,12 +280,38 @@ export default class MemosCardPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
+    let changed = false;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     this.settings.memoVisibility = normalizeMemoVisibility(this.settings.memoVisibility);
+    const normalizedBridgePort = normalizeBrowserClipPort(this.settings.browserClipBridgePort);
+    if (normalizedBridgePort !== this.settings.browserClipBridgePort) {
+      this.settings.browserClipBridgePort = normalizedBridgePort;
+      changed = true;
+    }
+    if (!this.settings.browserClipBridgeToken.trim()) {
+      this.settings.browserClipBridgeToken = generateBrowserClipToken();
+      changed = true;
+    }
+    if (changed) {
+      await this.saveData(this.settings);
+    }
   }
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  async restartBrowserClipBridge(): Promise<void> {
+    if (!Platform.isDesktopApp || !this.settings.browserClipBridgeEnabled) {
+      await this.browserClipBridge?.stop();
+      return;
+    }
+
+    try {
+      await this.browserClipBridge.start();
+    } catch (error) {
+      new Notice(`Browser clip bridge failed: ${getErrorMessage(error)}`);
+    }
   }
 
   refreshOpenViews(): void {
@@ -269,6 +320,168 @@ export default class MemosCardPlugin extends Plugin {
         void leaf.view.reloadFromSettings();
       }
     }
+  }
+
+  async clipWebPageFromUrl(
+    inputUrl: string,
+    visibility: MemosVisibility,
+    setStatus: (message: string) => void,
+  ): Promise<MemosMemo> {
+    setStatus("Fetching web page...");
+    const page = await fetchWebClipPage(inputUrl, this.settings);
+    return this.saveWebClipPage(page, visibility, setStatus);
+  }
+
+  async clipExtractedWebPage(
+    pageInput: Partial<WebClipPage>,
+    visibility: MemosVisibility,
+    setStatus: (message: string) => void,
+  ): Promise<MemosMemo> {
+    const page = normalizeExtractedWebClipPage(pageInput);
+    return this.saveWebClipPage(page, visibility, setStatus);
+  }
+
+  private async saveWebClipPage(
+    page: WebClipPage,
+    visibility: MemosVisibility,
+    setStatus: (message: string) => void,
+  ): Promise<MemosMemo> {
+    setStatus("Generating summary...");
+    const result = await summarizeWebClipPage(page, this.settings);
+    const content = buildWebClipMemoContent(page, result.summary);
+    const attachments: MemosAttachment[] = [];
+
+    if (result.imageUrl) {
+      try {
+        setStatus("Saving hero image...");
+        const image = await downloadWebClipImage(result.imageUrl, page.url, this.settings);
+        attachments.push(
+          await this.api.createAttachmentFromArrayBuffer(
+            image.filename,
+            image.type,
+            image.content,
+          ),
+        );
+      } catch (error) {
+        new Notice(`Hero image failed: ${getErrorMessage(error)}`);
+      }
+    }
+
+    setStatus("Saving memo...");
+    return this.api.createMemo(content, attachments, visibility);
+  }
+}
+
+class BrowserClipBridge {
+  private server: Server | null = null;
+  private runningPort = 0;
+
+  constructor(private readonly plugin: MemosCardPlugin) {}
+
+  async start(): Promise<void> {
+    const port = normalizeBrowserClipPort(this.plugin.settings.browserClipBridgePort);
+    if (this.server && this.runningPort === port) {
+      return;
+    }
+
+    await this.stop();
+    this.server = createServer((request, response) => {
+      void this.handleRequest(request, response);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const server = this.server;
+      if (!server) {
+        reject(new Error("Browser clip bridge server was not created."));
+        return;
+      }
+
+      const onError = (error: Error) => {
+        server.off("listening", onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        server.off("error", onError);
+        this.runningPort = port;
+        resolve();
+      };
+
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(port, "127.0.0.1");
+    });
+  }
+
+  async stop(): Promise<void> {
+    if (!this.server) {
+      this.runningPort = 0;
+      return;
+    }
+
+    const server = this.server;
+    this.server = null;
+    this.runningPort = 0;
+    await new Promise<void>((resolve) => {
+      server.close(() => {
+        resolve();
+      });
+    });
+  }
+
+  private async handleRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    setBrowserClipCorsHeaders(response);
+
+    if (request.method === "OPTIONS") {
+      writeBrowserClipJson(response, 204, null);
+      return;
+    }
+
+    if (request.method === "GET" && request.url === "/health") {
+      writeBrowserClipJson(response, 200, {
+        ok: true,
+        enabled: this.plugin.settings.browserClipBridgeEnabled,
+      });
+      return;
+    }
+
+    if (request.method !== "POST" || request.url !== "/clip") {
+      writeBrowserClipJson(response, 404, { ok: false, error: "Not found." });
+      return;
+    }
+
+    try {
+      const payload = await readBrowserClipJson(request);
+      const result = await this.handleClip(payload);
+      writeBrowserClipJson(response, 200, result);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      const status = message === "Unauthorized." ? 401 : 400;
+      writeBrowserClipJson(response, status, { ok: false, error: message });
+    }
+  }
+
+  private async handleClip(payload: BrowserClipRequest): Promise<BrowserClipResponse> {
+    const settings = this.plugin.settings;
+    if (!settings.browserClipBridgeToken.trim()
+      || payload.token !== settings.browserClipBridgeToken.trim()) {
+      throw new Error("Unauthorized.");
+    }
+
+    const memo = await this.plugin.clipExtractedWebPage(
+      payload.page ?? {},
+      normalizeMemoVisibility(payload.visibility ?? settings.memoVisibility),
+      () => undefined,
+    );
+    this.plugin.refreshOpenViews();
+    new Notice("Browser page clipped to Memos.");
+
+    return {
+      ok: true,
+      memoName: memo.name,
+    };
   }
 }
 
@@ -685,7 +898,7 @@ class MemosCardView extends ItemView {
     new WebClipModal(this.app, {
       initialVisibility: this.plugin.settings.memoVisibility,
       onClip: async (url, visibility, setStatus) => {
-        const created = await this.clipWebPage(url, visibility, setStatus);
+        const created = await this.plugin.clipWebPageFromUrl(url, visibility, setStatus);
         this.memos = [created, ...this.memos];
         this.renderCards();
         this.setStatus("");
@@ -727,39 +940,6 @@ class MemosCardView extends ItemView {
     }
 
     return attachments;
-  }
-
-  private async clipWebPage(
-    inputUrl: string,
-    visibility: MemosVisibility,
-    setStatus: (message: string) => void,
-  ): Promise<MemosMemo> {
-    setStatus("Fetching web page...");
-    const page = await fetchWebClipPage(inputUrl, this.plugin.settings);
-
-    setStatus("Generating summary...");
-    const result = await summarizeWebClipPage(page, this.plugin.settings);
-    const content = buildWebClipMemoContent(page, result.summary);
-    const attachments: MemosAttachment[] = [];
-
-    if (result.imageUrl) {
-      try {
-        setStatus("Saving hero image...");
-        const image = await downloadWebClipImage(result.imageUrl, page.url, this.plugin.settings);
-        attachments.push(
-          await this.plugin.api.createAttachmentFromArrayBuffer(
-            image.filename,
-            image.type,
-            image.content,
-          ),
-        );
-      } catch (error) {
-        new Notice(`Hero image failed: ${getErrorMessage(error)}`);
-      }
-    }
-
-    setStatus("Saving memo...");
-    return this.plugin.api.createMemo(content, attachments, visibility);
   }
 
   private openDeleteModal(memo: MemosMemo): void {
@@ -1196,6 +1376,62 @@ class MemosSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.memoVisibility = normalizeMemoVisibility(value);
             await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Browser clip bridge")
+      .setDesc("Allow the companion browser extension to send extracted pages to this plugin on 127.0.0.1.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.browserClipBridgeEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.browserClipBridgeEnabled = value;
+            await this.plugin.saveSettings();
+            await this.plugin.restartBrowserClipBridge();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Browser clip bridge port")
+      .setDesc("Localhost port used by the browser extension.")
+      .addText((text) => {
+        text
+          .setPlaceholder("27124")
+          .setValue(String(this.plugin.settings.browserClipBridgePort))
+          .onChange(async (value) => {
+            this.plugin.settings.browserClipBridgePort = normalizeBrowserClipPort(Number(value));
+            await this.plugin.saveSettings();
+            await this.plugin.restartBrowserClipBridge();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Browser clip bridge token")
+      .setDesc("Paste this token into the browser extension options.")
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text
+          .setValue(this.plugin.settings.browserClipBridgeToken)
+          .onChange(async (value) => {
+            this.plugin.settings.browserClipBridgeToken = value.trim() || generateBrowserClipToken();
+            await this.plugin.saveSettings();
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText("Copy")
+          .onClick(() => {
+            void copyTextToClipboard(this.plugin.settings.browserClipBridgeToken, "Bridge token copied.");
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText("Regenerate")
+          .onClick(async () => {
+            this.plugin.settings.browserClipBridgeToken = generateBrowserClipToken();
+            await this.plugin.saveSettings();
+            this.display();
           });
       });
 
@@ -2122,6 +2358,103 @@ function formatFileSize(size: number): string {
 
 function normalizeMemoVisibility(value: unknown): MemosVisibility {
   return value === "PUBLIC" ? "PUBLIC" : "PRIVATE";
+}
+
+function normalizeBrowserClipPort(value: unknown): number {
+  const port = typeof value === "number" ? value : Number(value);
+  if (Number.isInteger(port) && port >= 1024 && port <= 65535) {
+    return port;
+  }
+
+  return DEFAULT_SETTINGS.browserClipBridgePort;
+}
+
+function generateBrowserClipToken(): string {
+  return randomBytes(24).toString("hex");
+}
+
+function normalizeExtractedWebClipPage(input: Partial<WebClipPage>): WebClipPage {
+  const url = normalizeWebUrl(String(input.url ?? ""));
+  const description = normalizeWhitespace(input.description ?? "");
+  const text = normalizeWhitespace(input.text ?? "");
+  const title = normalizeWhitespace(input.title ?? "") || url;
+  const imageCandidates = Array.isArray(input.imageCandidates)
+    ? input.imageCandidates
+      .map((candidate) => {
+        try {
+          return resolveHttpUrl(String(candidate), url);
+        } catch {
+          return "";
+        }
+      })
+      .filter((candidate) => candidate.startsWith("http://") || candidate.startsWith("https://"))
+    : [];
+
+  if (!text && !description) {
+    throw new Error("No readable page content found.");
+  }
+
+  return {
+    url,
+    title,
+    description,
+    text,
+    imageCandidates: Array.from(new Set(imageCandidates)).slice(0, 12),
+  };
+}
+
+function setBrowserClipCorsHeaders(response: ServerResponse): void {
+  response.setHeader("Access-Control-Allow-Origin", "*");
+  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  response.setHeader("Access-Control-Max-Age", "86400");
+}
+
+function writeBrowserClipJson(
+  response: ServerResponse,
+  status: number,
+  body: BrowserClipResponse | Record<string, unknown> | null,
+): void {
+  response.statusCode = status;
+  if (!body) {
+    response.end();
+    return;
+  }
+
+  response.setHeader("Content-Type", "application/json; charset=utf-8");
+  response.end(JSON.stringify(body));
+}
+
+function readBrowserClipJson(request: IncomingMessage): Promise<BrowserClipRequest> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+
+    request.on("data", (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      if (totalBytes > BROWSER_CLIP_MAX_BODY_BYTES) {
+        reject(new Error("Browser clip payload is too large."));
+        request.destroy();
+        return;
+      }
+
+      chunks.push(chunk);
+    });
+
+    request.on("end", () => {
+      try {
+        const raw = Buffer.concat(chunks).toString("utf8");
+        const parsed = JSON.parse(raw) as BrowserClipRequest;
+        resolve(parsed);
+      } catch {
+        reject(new Error("Invalid browser clip JSON payload."));
+      }
+    });
+
+    request.on("error", () => {
+      reject(new Error("Failed to read browser clip payload."));
+    });
+  });
 }
 
 function createVisibilitySelect(

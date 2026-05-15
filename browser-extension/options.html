@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Memos Clipper Options</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="panel options-panel">
+      <h1>Memos Clipper Options</h1>
+      <label class="field">
+        <span>Bridge URL</span>
+        <input id="bridge-url" type="url" placeholder="http://127.0.0.1:27124">
+      </label>
+      <label class="field">
+        <span>Bridge token</span>
+        <input id="token" type="password" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>Default visibility</span>
+        <select id="visibility">
+          <option value="PRIVATE">Private</option>
+          <option value="PUBLIC">Public</option>
+        </select>
+      </label>
+      <button id="save" type="button" class="primary">Save</button>
+      <p id="status" class="status"></p>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
