@@ -9,7 +9,7 @@ Desktop Obsidian plugin that connects to a Memos instance and shows memos as edi
 * Refresh, page through, create, edit, delete, and choose private/public visibility for memos.
 * Create and edit memos with live Markdown preview.
 * Upload files as Memos attachments when creating or editing memos.
-* Clip web pages by URL, using Obsidian desktop's embedded browser or headless Chrome fallback when available, summarize them with a local OpenAI-compatible LLM, and save the summary plus source link to Memos.
+* Clip web pages by URL, using Obsidian desktop's embedded browser when needed, summarize them with a local OpenAI-compatible LLM, and save the summary plus source link to Memos.
 * Clip the current browser page with the companion Chromium extension, sending extracted page text and visible images directly to Obsidian.
 * Render memo Markdown content and show tags, visibility, pinned state, timestamps, and attachment links.
 
@@ -23,11 +23,11 @@ Desktop Obsidian plugin that connects to a Memos instance and shows memos as edi
 6. Open plugin settings and enter your Memos personal access token.
 7. For web clipping, configure a local OpenAI-compatible LLM base URL and model name.
 8. If a site rejects anonymous clipping, paste the site's browser Cookie header into `Web clip cookie`.
-9. Optionally set `System Chrome path` when the plugin cannot auto-detect Chrome for protected pages.
 
 The default server URL is the placeholder `https://memos.example.com`; replace it with your own Memos instance in settings.
 
 This plugin is desktop-only because browser clipping and protected-page fallbacks use local Node/Electron APIs.
+The plugin only writes to the system clipboard when you click a visible copy action, such as copying memo text or the browser clip bridge token.
 
 ## Browser Extension
 

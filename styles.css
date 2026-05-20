@@ -294,15 +294,6 @@
   width: 100%;
 }
 
-.memos-clipboard-buffer {
-  height: 1px;
-  left: -9999px;
-  opacity: 0;
-  position: fixed;
-  top: -9999px;
-  width: 1px;
-}
-
 .memos-clip-status {
   color: var(--text-muted);
   font-size: 0.84rem;
