@@ -1,6 +1,6 @@
 {
   "name": "memos-card-view",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "description": "Obsidian plugin for viewing and editing Memos records as cards.",
   "main": "dist/main.js",
   "scripts": {
