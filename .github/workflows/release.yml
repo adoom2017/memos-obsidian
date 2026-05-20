@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  attestations: write
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: Build and publish GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches release metadata
+        run: |
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          MANIFEST_VERSION="$(node -p "require('./manifest.json').version")"
+          EXTENSION_VERSION="$(node -p "require('./browser-extension/manifest.json').version")"
+          MIN_APP_VERSION="$(node -p "require('./manifest.json').minAppVersion")"
+          VERSIONS_MIN_APP="$(node -p "require('./versions.json')[require('./manifest.json').version]")"
+          if [ "$PACKAGE_VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PACKAGE_VERSION"
+            exit 1
+          fi
+          if [ "$MANIFEST_VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match manifest.json version $MANIFEST_VERSION"
+            exit 1
+          fi
+          if [ "$EXTENSION_VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match browser-extension/manifest.json version $EXTENSION_VERSION"
+            exit 1
+          fi
+          if [ "$VERSIONS_MIN_APP" != "$MIN_APP_VERSION" ]; then
+            echo "versions.json does not map $MANIFEST_VERSION to minAppVersion $MIN_APP_VERSION"
+            exit 1
+          fi
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Verify release assets
+        run: |
+          test -f dist/main.js
+          test -f dist/manifest.json
+          test -f dist/styles.css
+
+      - name: Generate artifact attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/main.js
+            dist/manifest.json
+            dist/styles.css
+
+      - name: Generate release notes
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          PREVIOUS_TAG="$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)"
+
+          {
+            echo "## Build command"
+            echo
+            echo '```bash'
+            echo "npm ci"
+            echo "npm run build"
+            echo '```'
+            echo
+            echo "## Changes"
+            echo
+
+            if [ -n "$PREVIOUS_TAG" ]; then
+              echo "Changes since \`$PREVIOUS_TAG\`:"
+              echo
+              git log --pretty=format:'- %s (%h)' "$PREVIOUS_TAG..$TAG"
+            else
+              echo "Initial release:"
+              echo
+              git log --pretty=format:'- %s (%h)' "$TAG"
+            fi
+
+            echo
+            echo
+            echo "## Assets"
+            echo
+            echo "- main.js"
+            echo "- manifest.json"
+            echo "- styles.css"
+          } > release-notes.md
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/main.js \
+            dist/manifest.json \
+            dist/styles.css \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            --verify-tag

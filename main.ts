@@ -218,7 +218,7 @@ export default class MemosCardPlugin extends Plugin {
 
     this.addCommand({
       id: "open-memos-card-view",
-      name: "Open Memos card view in main area",
+      name: "Open in main area",
       callback: () => {
         void this.activateView("main");
       },
@@ -226,7 +226,7 @@ export default class MemosCardPlugin extends Plugin {
 
     this.addCommand({
       id: "open-memos-card-view-sidebar",
-      name: "Open Memos card view in right sidebar",
+      name: "Open in right sidebar",
       callback: () => {
         void this.activateView("right");
       },
@@ -234,7 +234,7 @@ export default class MemosCardPlugin extends Plugin {
 
     this.addCommand({
       id: "refresh-memos",
-      name: "Refresh Memos card view",
+      name: "Refresh cards",
       callback: () => {
         this.refreshOpenViews();
       },
@@ -242,7 +242,7 @@ export default class MemosCardPlugin extends Plugin {
 
     this.addCommand({
       id: "clip-web-page-to-memos",
-      name: "Clip web page to Memos",
+      name: "Clip web page",
       callback: () => {
         void this.activateView("main").then(() => {
           for (const leaf of this.app.workspace.getLeavesOfType(MEMOS_VIEW_TYPE)) {

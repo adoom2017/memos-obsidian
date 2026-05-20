@@ -47,6 +47,11 @@ The extension sends extracted title, URL, readable text, description, and visibl
 
 ## Release Packaging
 
+Community releases require a public GitHub repository, a GitHub Release whose
+tag exactly matches `manifest.json` `version`, and the three Obsidian release
+assets attached to that release. Initial community-directory submission is done
+from <https://community.obsidian.md> after signing in and linking GitHub.
+
 Run:
 
 ```bash
@@ -66,5 +71,24 @@ manifest, the browser extension manifest, and `versions.json`. It then creates:
 For Obsidian Community Plugin GitHub releases, upload the three files under
 `release/obsidian/` as release assets. For Chrome or Edge extension stores,
 upload `release/memos-obsidian-clipper-<version>-chrome.zip`.
+
+For repeatable GitHub releases, run one of:
+
+```bash
+npm run release:patch
+npm run release:minor
+npm run release:major
+```
+
+Then push the default branch and the generated version tag:
+
+```bash
+git push origin main
+git push origin <version>
+```
+
+Pushing the tag triggers the Release workflow, which builds the plugin, uploads
+only `main.js`, `manifest.json`, and `styles.css`, and generates artifact
+attestations for those files.
 
 Do not commit personal access tokens or Obsidian `data.json`.
